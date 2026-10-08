@@ -35,6 +35,9 @@ htmlcov/
 .env
 .env.local
 *.local
+*.db
+*.sqlite
+*.sqlite3
 
 # Node / Frontend
 node_modules/

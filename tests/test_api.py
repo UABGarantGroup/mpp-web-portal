@@ -1,19 +1,15 @@
 """
-Unit tests for FastAPI REST endpoints.
+Unit tests for FastAPI REST endpoints with database persistence.
 """
 
 from datetime import date
-from fastapi.testclient import TestClient
 import pytest
 
-from backend.app.main import app
 from backend.app.models.enums import RateTableEnum, ResourceKindEnum, ResourceTypeEnum
 from backend.app.models.schemas import CostRateItem, ProjectTemplateRequest, ResourceModel
 
-client = TestClient(app)
 
-
-def test_health_endpoint():
+def test_health_endpoint(client):
     response = client.get("/health")
     assert response.status_code == 200
     data = response.json()
@@ -21,7 +17,7 @@ def test_health_endpoint():
     assert data["service"] == "mpp-template-engine"
 
 
-def test_calendars_endpoints():
+def test_calendars_endpoints(client):
     # List calendars
     resp = client.get("/api/calendars")
     assert resp.status_code == 200
@@ -35,14 +31,15 @@ def test_calendars_endpoints():
     assert "LT" in countries
     assert "NO" in countries
 
-    # Import holidays into calendar 1
-    resp_import = client.post("/api/calendars/1/import-holidays?years=2026")
+    # Import holidays into calendar 1 (Admin role)
+    headers = {"X-User-Role": "Admin", "X-User-Email": "admin@enterprise.com"}
+    resp_import = client.post("/api/calendars/1/import-holidays?years=2026", headers=headers)
     assert resp_import.status_code == 200
     updated_cal = resp_import.json()
     assert len(updated_cal["exceptions"]) >= 4
 
 
-def test_resources_crud_and_soft_delete():
+def test_resources_crud_and_soft_delete(client):
     # List resources
     resp = client.get("/api/resources")
     assert resp.status_code == 200
@@ -55,8 +52,9 @@ def test_resources_crud_and_soft_delete():
     generic_list = resp_generic.json()
     assert all(r["resource_kind"] == "Generic" for r in generic_list)
 
-    # Soft delete resource 3
-    resp_del = client.delete("/api/resources/3")
+    # Soft delete resource 3 (Admin / RM role)
+    headers = {"X-User-Role": "Admin", "X-User-Email": "admin@enterprise.com"}
+    resp_del = client.delete("/api/resources/3", headers=headers)
     assert resp_del.status_code == 200
     deleted_res = resp_del.json()
     assert deleted_res["is_active"] is False
@@ -70,19 +68,20 @@ def test_resources_crud_and_soft_delete():
     assert any(r["id"] == 3 for r in resp_all.json())
 
 
-def test_update_rates_endpoint():
+def test_update_rates_endpoint(client):
     new_rates = [
         {"rate_table": "A", "standard_rate": 52.00, "overtime_rate": 78.00, "cost_per_use": 0.0},
         {"rate_table": "B", "standard_rate": 68.00, "overtime_rate": 102.00, "cost_per_use": 0.0},
     ]
-    resp = client.put("/api/resources/1/rates", json=new_rates)
+    headers = {"X-User-Role": "FinanceManager", "X-User-Email": "finance@enterprise.com"}
+    resp = client.put("/api/resources/1/rates", json=new_rates, headers=headers)
     assert resp.status_code == 200
-    res = resp.json()
-    assert len(res["rates"]) == 2
-    assert res["rates"][0]["standard_rate"] == 52.00
+    rates = resp.json()
+    assert len(rates) == 2
+    assert rates[0]["standard_rate"] == 52.00
 
 
-def test_export_xml_endpoint():
+def test_export_xml_endpoint(client):
     payload = {
         "project_erp_number": "26-0537",
         "project_title": "26-0537 LA MANCHA KNUTSEN - assistance to Burckhardt",
