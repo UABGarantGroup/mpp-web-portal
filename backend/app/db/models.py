@@ -54,7 +54,41 @@ class CalendarDB(Base):
         cascade="all, delete-orphan",
         order_by="CalendarExceptionDB.from_date",
     )
+    weekdays = relationship(
+        "CalendarWeekdayDB",
+        back_populates="calendar",
+        cascade="all, delete-orphan",
+        order_by="CalendarWeekdayDB.day_type",
+    )
     resources = relationship("ResourceDB", back_populates="base_calendar")
+
+
+class CalendarWeekdayDB(Base):
+    __tablename__ = "calendar_weekdays"
+
+    id = Column(Integer, primary_key=True, index=True)
+    calendar_id = Column(Integer, ForeignKey("calendars.id", ondelete="CASCADE"), nullable=False, index=True)
+    day_type = Column(Integer, nullable=False)  # 1=Sunday, 2=Monday, ..., 7=Saturday
+    day_working = Column(Boolean, default=True, nullable=False)
+
+    calendar = relationship("CalendarDB", back_populates="weekdays")
+    working_times = relationship(
+        "CalendarWorkingShiftDB",
+        back_populates="weekday",
+        cascade="all, delete-orphan",
+        order_by="CalendarWorkingShiftDB.from_time",
+    )
+
+
+class CalendarWorkingShiftDB(Base):
+    __tablename__ = "calendar_working_shifts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    weekday_id = Column(Integer, ForeignKey("calendar_weekdays.id", ondelete="CASCADE"), nullable=False, index=True)
+    from_time = Column(String(8), nullable=False)  # "HH:MM:SS" e.g. "13:00:00"
+    to_time = Column(String(8), nullable=False)    # "HH:MM:SS" e.g. "17:00:00"
+
+    weekday = relationship("CalendarWeekdayDB", back_populates="working_times")
 
 
 class CalendarExceptionDB(Base):

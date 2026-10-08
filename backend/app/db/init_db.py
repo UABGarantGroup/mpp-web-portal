@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 from backend.app.db.models import (
     CalendarDB,
     CalendarExceptionDB,
+    CalendarWeekdayDB,
+    CalendarWorkingShiftDB,
     CustomFieldDB,
     RatePeriodDB,
     ResourceDB,
@@ -24,6 +26,36 @@ from backend.app.models.enums import (
 )
 from backend.app.services.field_ids import get_field_id
 from backend.app.services.holiday_service import fetch_country_holidays
+
+
+def seed_calendar_weekdays(db: Session, calendar_id: int, schedule_type: str = "standard_40h"):
+    """
+    Populates 7 weekdays (DayType 1=Sun to 7=Sat) with explicit working shifts.
+    """
+    if db.query(CalendarWeekdayDB).filter(CalendarWeekdayDB.calendar_id == calendar_id).first():
+        return
+
+    if schedule_type == "mon_sun_4h":
+        # Monday to Sunday 4 work hours from 13:00 to 17:00
+        for day_type in range(1, 8):  # 1=Sun, 2=Mon, ..., 7=Sat
+            wd = CalendarWeekdayDB(calendar_id=calendar_id, day_type=day_type, day_working=True)
+            db.add(wd)
+            db.flush()
+            shift = CalendarWorkingShiftDB(weekday_id=wd.id, from_time="13:00:00", to_time="17:00:00")
+            db.add(shift)
+    else:
+        # Standard office 40h: Mon-Fri 08:00-12:00 & 13:00-17:00; Sat-Sun off
+        for day_type in range(1, 8):
+            is_working = day_type not in (1, 7)  # 1=Sunday, 7=Saturday non-working
+            wd = CalendarWeekdayDB(calendar_id=calendar_id, day_type=day_type, day_working=is_working)
+            db.add(wd)
+            db.flush()
+            if is_working:
+                s1 = CalendarWorkingShiftDB(weekday_id=wd.id, from_time="08:00:00", to_time="12:00:00")
+                s2 = CalendarWorkingShiftDB(weekday_id=wd.id, from_time="13:00:00", to_time="17:00:00")
+                db.add(s1)
+                db.add(s2)
+    db.commit()
 
 
 def init_db(db: Session) -> None:
@@ -78,7 +110,61 @@ def init_db(db: Session) -> None:
             )
             db.add(exc)
 
+        # 3. Afternoon shift calendar (Mon-Sun 13:00-17:00, 4h/day)
+        cal_afternoon = CalendarDB(
+            id=3,
+            name="Lithuania – Afternoon 28h (Mon-Sun 13:00-17:00)",
+            country_code="LT",
+            is_base_calendar=True,
+            base_calendar_uid=-1,
+        )
+        db.add(cal_afternoon)
+        db.flush()
+
+        for h in holidays_lt:
+            exc = CalendarExceptionDB(
+                calendar_id=cal_afternoon.id,
+                name=h["name"],
+                from_date=h["from_date"],
+                to_date=h["to_date"],
+                working=False,
+                source="IMPORT",
+            )
+            db.add(exc)
+
         db.commit()
+
+    # Ensure Calendar 3 exists even if 1 & 2 were already seeded
+    cal_3 = db.query(CalendarDB).filter(CalendarDB.id == 3).first()
+    if not cal_3:
+        cal_3 = CalendarDB(
+            id=3,
+            name="Lithuania – Afternoon 28h (Mon-Sun 13:00-17:00)",
+            country_code="LT",
+            is_base_calendar=True,
+            base_calendar_uid=-1,
+        )
+        db.add(cal_3)
+        db.flush()
+        holidays_lt = fetch_country_holidays("LT", [2026, 2027])
+        for h in holidays_lt:
+            exc = CalendarExceptionDB(
+                calendar_id=cal_3.id,
+                name=h["name"],
+                from_date=h["from_date"],
+                to_date=h["to_date"],
+                working=False,
+                source="IMPORT",
+            )
+            db.add(exc)
+        db.commit()
+
+    # Ensure all calendars have weekdays populated
+    for c in db.query(CalendarDB).all():
+        if c.id == 3:
+            seed_calendar_weekdays(db, c.id, "mon_sun_4h")
+        else:
+            seed_calendar_weekdays(db, c.id, "standard_40h")
 
     # 2. Seed Custom Fields if empty
     if not db.query(CustomFieldDB).first():

@@ -32,13 +32,35 @@ class CalendarException(BaseModel):
     working: bool = False
 
 
+class WorkingShiftModel(BaseModel):
+    from_time: str = Field(..., description="Shift start time e.g. '13:00:00'")
+    to_time: str = Field(..., description="Shift finish time e.g. '17:00:00'")
+
+
+class WeekDayModel(BaseModel):
+    day_type: int = Field(..., description="MS Project DayType (1=Sunday, 2=Monday, ..., 7=Saturday)")
+    day_working: bool = Field(default=True, description="True if working day, False if weekend/day off")
+    working_times: List[WorkingShiftModel] = Field(default_factory=list, description="Working shifts for the day")
+
+
 class CalendarModel(BaseModel):
     id: int
     name: str
     country_code: str = Field(default="LT", description="ISO 3166-1 alpha-2 country code")
     is_base_calendar: bool = True
     base_calendar_uid: Optional[int] = -1
-    exceptions: List[CalendarException] = []
+    weekdays: List[WeekDayModel] = Field(default_factory=list)
+    exceptions: List[CalendarException] = Field(default_factory=list)
+
+
+class CalendarCreate(BaseModel):
+    name: str
+    country_code: str = "LT"
+    weekdays: Optional[List[WeekDayModel]] = None
+
+
+class CalendarWeekdaysUpdate(BaseModel):
+    weekdays: List[WeekDayModel]
 
 
 class ResourceModel(BaseModel):

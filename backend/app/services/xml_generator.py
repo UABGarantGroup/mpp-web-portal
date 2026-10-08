@@ -48,6 +48,58 @@ RESOURCE_TYPE_MAP: Dict[ResourceTypeEnum, int] = {
 }
 
 
+def compute_calendar_metrics(cal: Optional[CalendarModel]):
+    """
+    Derives project-level calendar headers from the calendar's weekday shift schedule.
+    """
+    default_start = "08:00:00"
+    default_finish = "17:00:00"
+    minutes_per_day = 480
+    minutes_per_week = 2400
+    days_per_month = 20
+
+    if not cal or not cal.weekdays:
+        return default_start, default_finish, minutes_per_day, minutes_per_week, days_per_month
+
+    active_starts = []
+    active_finishes = []
+    total_weekly_minutes = 0
+    working_days_count = 0
+    daily_minutes_list = []
+
+    for wd in cal.weekdays:
+        if wd.day_working and wd.working_times:
+            working_days_count += 1
+            day_mins = 0
+            for shift in wd.working_times:
+                active_starts.append(shift.from_time)
+                active_finishes.append(shift.to_time)
+                try:
+                    t_from = datetime.strptime(shift.from_time, "%H:%M:%S")
+                    t_to = datetime.strptime(shift.to_time, "%H:%M:%S")
+                    diff = int((t_to - t_from).total_seconds() / 60)
+                    if diff > 0:
+                        day_mins += diff
+                except Exception:
+                    pass
+            daily_minutes_list.append(day_mins)
+            total_weekly_minutes += day_mins
+
+    if active_starts:
+        default_start = min(active_starts)
+    if active_finishes:
+        default_finish = max(active_finishes)
+    if total_weekly_minutes > 0:
+        minutes_per_week = total_weekly_minutes
+        if daily_minutes_list and len(set(daily_minutes_list)) == 1:
+            minutes_per_day = daily_minutes_list[0]
+        else:
+            minutes_per_day = int(round(total_weekly_minutes / working_days_count)) if working_days_count > 0 else 480
+        days_per_month = int(round(working_days_count * 4.33))
+
+    return default_start, default_finish, minutes_per_day, minutes_per_week, days_per_month
+
+
 def build_ms_project_xml(
     template_req: ProjectTemplateRequest,
     calendars: Dict[int, CalendarModel],
@@ -59,9 +111,17 @@ def build_ms_project_xml(
     ns = "http://schemas.microsoft.com/project"
     root = ET.Element("Project", xmlns=ns)
 
+    selected_cal = calendars.get(template_req.calendar_id)
+    if not selected_cal:
+        selected_cal = list(calendars.values())[0] if calendars else CalendarModel(
+            id=1, name="Standard Enterprise Calendar"
+        )
+
+    def_start, def_finish, mins_day, mins_week, days_month = compute_calendar_metrics(selected_cal)
+
     # 1. Project Header Elements (Strict Canonical Sequence)
     now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    start_iso = f"{template_req.start_date.isoformat()}T08:00:00"
+    start_iso = f"{template_req.start_date.isoformat()}T{def_start}"
 
     ET.SubElement(root, "SaveVersion").text = "14"  # Project 2010/2013/2016/2019/M365
     ET.SubElement(root, "Name").text = template_req.project_title
@@ -79,12 +139,12 @@ def build_ms_project_xml(
     ET.SubElement(root, "CurrencySymbol").text = "€"
     ET.SubElement(root, "CurrencyCode").text = "EUR"
     ET.SubElement(root, "CurrencySymbolPosition").text = "3"  # e.g., 100 €
-    ET.SubElement(root, "CalendarUID").text = str(template_req.calendar_id)
-    ET.SubElement(root, "DefaultStartTime").text = "08:00:00"
-    ET.SubElement(root, "DefaultFinishTime").text = "17:00:00"
-    ET.SubElement(root, "MinutesPerDay").text = "480"
-    ET.SubElement(root, "MinutesPerWeek").text = "2400"
-    ET.SubElement(root, "DaysPerMonth").text = "20"
+    ET.SubElement(root, "CalendarUID").text = str(selected_cal.id)
+    ET.SubElement(root, "DefaultStartTime").text = def_start
+    ET.SubElement(root, "DefaultFinishTime").text = def_finish
+    ET.SubElement(root, "MinutesPerDay").text = str(mins_day)
+    ET.SubElement(root, "MinutesPerWeek").text = str(mins_week)
+    ET.SubElement(root, "DaysPerMonth").text = str(days_month)
     ET.SubElement(root, "DefaultTaskType").text = "0"
     ET.SubElement(root, "DefaultFixedCostAccrual").text = "3"
     ET.SubElement(root, "DefaultStandardRate").text = "0"
@@ -127,11 +187,6 @@ def build_ms_project_xml(
 
     # 3. Calendars Definition
     calendars_el = ET.SubElement(root, "Calendars")
-    selected_cal = calendars.get(template_req.calendar_id)
-    if not selected_cal:
-        selected_cal = list(calendars.values())[0] if calendars else CalendarModel(
-            id=1, name="Standard Enterprise Calendar"
-        )
 
     # Write Base Calendar
     cal_el = ET.SubElement(calendars_el, "Calendar")
@@ -140,24 +195,38 @@ def build_ms_project_xml(
     ET.SubElement(cal_el, "IsBaseCalendar").text = "1"
     ET.SubElement(cal_el, "BaseCalendarUID").text = "-1"
 
-    # Write WeekDays with standard working hours (Mon-Fri 08:00-12:00, 13:00-17:00)
+    # Write WeekDays with configured working hours (Mon-Sun)
     weekdays_el = ET.SubElement(cal_el, "WeekDays")
+    weekday_map = {wd.day_type: wd for wd in selected_cal.weekdays} if selected_cal.weekdays else {}
+
     for day_type in range(1, 8):  # 1=Sunday, 2=Monday, ..., 7=Saturday
         wd_el = ET.SubElement(weekdays_el, "WeekDay")
         ET.SubElement(wd_el, "DayType").text = str(day_type)
-        if day_type in (1, 7):  # Weekend
-            ET.SubElement(wd_el, "DayWorking").text = "0"
-        else:  # Working day
-            ET.SubElement(wd_el, "DayWorking").text = "1"
-            wtimes_el = ET.SubElement(wd_el, "WorkingTimes")
-            # Shift 1: 08:00 to 12:00
-            wt1 = ET.SubElement(wtimes_el, "WorkingTime")
-            ET.SubElement(wt1, "FromTime").text = "08:00:00"
-            ET.SubElement(wt1, "ToTime").text = "12:00:00"
-            # Shift 2: 13:00 to 17:00
-            wt2 = ET.SubElement(wtimes_el, "WorkingTime")
-            ET.SubElement(wt2, "FromTime").text = "13:00:00"
-            ET.SubElement(wt2, "ToTime").text = "17:00:00"
+
+        if day_type in weekday_map:
+            wd_model = weekday_map[day_type]
+            if wd_model.day_working and wd_model.working_times:
+                ET.SubElement(wd_el, "DayWorking").text = "1"
+                wtimes_el = ET.SubElement(wd_el, "WorkingTimes")
+                for shift in wd_model.working_times:
+                    wt = ET.SubElement(wtimes_el, "WorkingTime")
+                    ET.SubElement(wt, "FromTime").text = shift.from_time
+                    ET.SubElement(wt, "ToTime").text = shift.to_time
+            else:
+                ET.SubElement(wd_el, "DayWorking").text = "0"
+        else:
+            # Fallback to standard 40h working week (Mon-Fri 08-12, 13-17)
+            if day_type in (1, 7):  # Weekend
+                ET.SubElement(wd_el, "DayWorking").text = "0"
+            else:  # Working day
+                ET.SubElement(wd_el, "DayWorking").text = "1"
+                wtimes_el = ET.SubElement(wd_el, "WorkingTimes")
+                wt1 = ET.SubElement(wtimes_el, "WorkingTime")
+                ET.SubElement(wt1, "FromTime").text = "08:00:00"
+                ET.SubElement(wt1, "ToTime").text = "12:00:00"
+                wt2 = ET.SubElement(wtimes_el, "WorkingTime")
+                ET.SubElement(wt2, "FromTime").text = "13:00:00"
+                ET.SubElement(wt2, "ToTime").text = "17:00:00"
 
     # Write Exceptions nested inside <TimePeriod>
     if selected_cal.exceptions:
@@ -203,7 +272,7 @@ def build_ms_project_xml(
     ET.SubElement(summary_task, "OutlineLevel").text = "0"
     ET.SubElement(summary_task, "Priority").text = "500"
     ET.SubElement(summary_task, "Start").text = start_iso
-    ET.SubElement(summary_task, "Finish").text = f"{template_req.start_date.isoformat()}T17:00:00"
+    ET.SubElement(summary_task, "Finish").text = f"{template_req.start_date.isoformat()}T{def_finish}"
     ET.SubElement(summary_task, "Duration").text = "PT0H0M0S"
     ET.SubElement(summary_task, "DurationFormat").text = "53"
     ET.SubElement(summary_task, "Work").text = "PT0H0M0S"

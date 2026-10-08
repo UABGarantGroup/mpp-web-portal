@@ -14,6 +14,8 @@ from backend.app.db.models import (
     AuditLogDB,
     CalendarDB,
     CalendarExceptionDB,
+    CalendarWeekdayDB,
+    CalendarWorkingShiftDB,
     CustomFieldDB,
     RatePeriodDB,
     ResourceDB,
@@ -28,12 +30,16 @@ from backend.app.models.enums import (
     ResourceTypeEnum,
 )
 from backend.app.models.schemas import (
+    CalendarCreate,
     CalendarException,
     CalendarModel,
+    CalendarWeekdaysUpdate,
     CostRateItem,
     CustomFieldDefinition,
     ProjectTemplateRequest,
     ResourceModel,
+    WeekDayModel,
+    WorkingShiftModel,
 )
 from backend.app.services.field_ids import get_field_id
 from backend.app.services.holiday_service import fetch_country_holidays, get_supported_countries
@@ -52,36 +58,158 @@ def health_check():
 
 # --- Calendars & Holidays Endpoints ---
 
+def map_db_calendar_to_model(c: CalendarDB) -> CalendarModel:
+    exceptions = [
+        CalendarException(
+            name=e.name,
+            from_date=e.from_date,
+            to_date=e.to_date,
+            working=e.working,
+        )
+        for e in c.exceptions
+    ]
+    weekdays = [
+        WeekDayModel(
+            day_type=wd.day_type,
+            day_working=wd.day_working,
+            working_times=[
+                WorkingShiftModel(from_time=shift.from_time, to_time=shift.to_time)
+                for shift in wd.working_times
+            ],
+        )
+        for wd in c.weekdays
+    ]
+    return CalendarModel(
+        id=c.id,
+        name=c.name,
+        country_code=c.country_code,
+        is_base_calendar=c.is_base_calendar,
+        base_calendar_uid=c.base_calendar_uid,
+        weekdays=weekdays,
+        exceptions=exceptions,
+    )
+
+
 @router.get("/api/calendars", response_model=List[CalendarModel], tags=["Calendars"])
 def list_calendars(db: Session = Depends(get_db)):
     cal_dbs = db.query(CalendarDB).all()
-    results = []
-    for c in cal_dbs:
-        exceptions = [
-            CalendarException(
-                name=e.name,
-                from_date=e.from_date,
-                to_date=e.to_date,
-                working=e.working,
-            )
-            for e in c.exceptions
-        ]
-        results.append(
-            CalendarModel(
-                id=c.id,
-                name=c.name,
-                country_code=c.country_code,
-                is_base_calendar=c.is_base_calendar,
-                base_calendar_uid=c.base_calendar_uid,
-                exceptions=exceptions,
-            )
-        )
-    return results
+    return [map_db_calendar_to_model(c) for c in cal_dbs]
 
 
 @router.get("/api/calendars/countries", tags=["Calendars"])
 def get_countries():
     return get_supported_countries()
+
+
+@router.get("/api/calendars/{calendar_id}", response_model=CalendarModel, tags=["Calendars"])
+def get_calendar(calendar_id: int, db: Session = Depends(get_db)):
+    cal = db.query(CalendarDB).filter(CalendarDB.id == calendar_id).first()
+    if not cal:
+        raise HTTPException(status_code=404, detail="Calendar not found")
+    return map_db_calendar_to_model(cal)
+
+
+@router.post("/api/calendars", response_model=CalendarModel, status_code=status.HTTP_201_CREATED, tags=["Calendars"])
+def create_calendar(
+    cal_in: CalendarCreate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin"])),
+):
+    new_cal = CalendarDB(
+        name=cal_in.name,
+        country_code=cal_in.country_code,
+        is_base_calendar=True,
+        base_calendar_uid=-1,
+    )
+    db.add(new_cal)
+    db.flush()
+
+    if cal_in.weekdays:
+        for wd in cal_in.weekdays:
+            wd_db = CalendarWeekdayDB(
+                calendar_id=new_cal.id,
+                day_type=wd.day_type,
+                day_working=wd.day_working,
+            )
+            db.add(wd_db)
+            db.flush()
+            if wd.day_working and wd.working_times:
+                for shift in wd.working_times:
+                    s_db = CalendarWorkingShiftDB(
+                        weekday_id=wd_db.id,
+                        from_time=shift.from_time,
+                        to_time=shift.to_time,
+                    )
+                    db.add(s_db)
+    else:
+        # Default standard 40h office
+        for day_type in range(1, 8):
+            is_working = day_type not in (1, 7)
+            wd_db = CalendarWeekdayDB(calendar_id=new_cal.id, day_type=day_type, day_working=is_working)
+            db.add(wd_db)
+            db.flush()
+            if is_working:
+                db.add(CalendarWorkingShiftDB(weekday_id=wd_db.id, from_time="08:00:00", to_time="12:00:00"))
+                db.add(CalendarWorkingShiftDB(weekday_id=wd_db.id, from_time="13:00:00", to_time="17:00:00"))
+
+    # Also auto-import holidays for country_code
+    try:
+        holidays_imported = fetch_country_holidays(new_cal.country_code, [date.today().year, date.today().year + 1])
+        for h in holidays_imported:
+            exc = CalendarExceptionDB(
+                calendar_id=new_cal.id,
+                name=h["name"],
+                from_date=h["from_date"],
+                to_date=h["to_date"],
+                working=False,
+                source="IMPORT",
+            )
+            db.add(exc)
+    except Exception:
+        pass
+
+    db.commit()
+    db.refresh(new_cal)
+    return map_db_calendar_to_model(new_cal)
+
+
+@router.put("/api/calendars/{calendar_id}/weekdays", response_model=CalendarModel, tags=["Calendars"])
+def update_calendar_weekdays(
+    calendar_id: int,
+    weekdays_in: CalendarWeekdaysUpdate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin"])),
+):
+    cal = db.query(CalendarDB).filter(CalendarDB.id == calendar_id).first()
+    if not cal:
+        raise HTTPException(status_code=404, detail="Calendar not found")
+
+    # Clear existing weekdays for this calendar
+    existing_wds = db.query(CalendarWeekdayDB).filter(CalendarWeekdayDB.calendar_id == calendar_id).all()
+    for wd in existing_wds:
+        db.delete(wd)
+    db.flush()
+
+    for wd in weekdays_in.weekdays:
+        wd_db = CalendarWeekdayDB(
+            calendar_id=calendar_id,
+            day_type=wd.day_type,
+            day_working=wd.day_working,
+        )
+        db.add(wd_db)
+        db.flush()
+        if wd.day_working and wd.working_times:
+            for shift in wd.working_times:
+                s_db = CalendarWorkingShiftDB(
+                    weekday_id=wd_db.id,
+                    from_time=shift.from_time,
+                    to_time=shift.to_time,
+                )
+                db.add(s_db)
+
+    db.commit()
+    db.refresh(cal)
+    return map_db_calendar_to_model(cal)
 
 
 @router.post("/api/calendars/{calendar_id}/import-holidays", response_model=CalendarModel, tags=["Calendars"])
@@ -115,17 +243,7 @@ def import_holidays(
     db.commit()
     db.refresh(cal)
 
-    return CalendarModel(
-        id=cal.id,
-        name=cal.name,
-        country_code=cal.country_code,
-        is_base_calendar=cal.is_base_calendar,
-        base_calendar_uid=cal.base_calendar_uid,
-        exceptions=[
-            CalendarException(name=e.name, from_date=e.from_date, to_date=e.to_date, working=e.working)
-            for e in cal.exceptions
-        ],
-    )
+    return map_db_calendar_to_model(cal)
 
 
 # --- Resources Endpoints ---
@@ -381,20 +499,7 @@ async def import_rates_endpoint(
 def export_project_xml(template_req: ProjectTemplateRequest, db: Session = Depends(get_db)):
     # Build dictionary of calendars
     cal_dbs = db.query(CalendarDB).all()
-    calendars_dict = {
-        c.id: CalendarModel(
-            id=c.id,
-            name=c.name,
-            country_code=c.country_code,
-            is_base_calendar=c.is_base_calendar,
-            base_calendar_uid=c.base_calendar_uid,
-            exceptions=[
-                CalendarException(name=e.name, from_date=e.from_date, to_date=e.to_date, working=e.working)
-                for e in c.exceptions
-            ],
-        )
-        for c in cal_dbs
-    }
+    calendars_dict = {c.id: map_db_calendar_to_model(c) for c in cal_dbs}
 
     # Build dictionary of resources
     res_dbs = db.query(ResourceDB).all()

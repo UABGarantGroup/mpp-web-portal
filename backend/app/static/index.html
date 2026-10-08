@@ -350,6 +350,31 @@
     </div>
   </div>
 
+  <!-- Calendar Schedule Modal -->
+  <div id="calendar-schedule-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="max-width: 680px;">
+      <div class="modal-header">
+        <h3 id="cal-schedule-title">Edit Calendar Working Hours</h3>
+        <button style="border:none;background:none;font-size:1.2rem;cursor:pointer;" onclick="closeCalendarScheduleModal()">&times;</button>
+      </div>
+      <input type="hidden" id="cal-schedule-cal-id">
+
+      <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap;">
+        <button type="button" class="btn btn-sm btn-secondary" onclick="applyPresetSchedule('mon_sun_4h')"><i class="fa-solid fa-bolt"></i> Preset: Mon–Sun 4h (13:00–17:00)</button>
+        <button type="button" class="btn btn-sm btn-secondary" onclick="applyPresetSchedule('mon_fri_8h')"><i class="fa-solid fa-briefcase"></i> Preset: Mon–Fri 8h (08:00–17:00)</button>
+      </div>
+
+      <div id="weekday-schedule-rows" style="display: flex; flex-direction: column; gap: 0.6rem; max-height: 380px; overflow-y: auto; padding-right: 0.5rem;">
+        <!-- Day rows injected by JS -->
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeCalendarScheduleModal()">Cancel</button>
+        <button class="btn" onclick="saveCalendarSchedule()"><i class="fa-solid fa-floppy-disk"></i> Save Schedule</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     // State
     let currentRole = "Admin";
@@ -698,31 +723,200 @@
 
     // --- CALENDARS TAB ---
 
+    // --- CALENDARS TAB ---
+
+    const DAY_NAMES = {
+      1: "Sunday",
+      2: "Monday",
+      3: "Tuesday",
+      4: "Wednesday",
+      5: "Thursday",
+      6: "Friday",
+      7: "Saturday"
+    };
+
+    let editingCal = null;
+
     async function loadCalendars() {
       const resp = await fetch("/api/calendars", { headers: getAuthHeaders() });
-      const cals = await resp.json();
+      allCalendars = await resp.json();
       const container = document.getElementById("calendars-container");
       container.innerHTML = "";
 
-      cals.forEach(c => {
+      allCalendars.forEach(c => {
         const card = document.createElement("div");
         card.className = "card";
         card.style.margin = "0";
+
+        // Sort weekdays Mon (2) to Sun (1)
+        const sortedWds = [...(c.weekdays || [])].sort((a, b) => {
+          const ord = { 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 1: 7 };
+          return (ord[a.day_type] || 0) - (ord[b.day_type] || 0);
+        });
+
+        const scheduleHtml = sortedWds.length > 0 ? sortedWds.map(w => {
+          const name = DAY_NAMES[w.day_type] || `Day ${w.day_type}`;
+          if (!w.day_working || !w.working_times || w.working_times.length === 0) {
+            return `<div style="display:flex; justify-content:space-between; padding:0.2rem 0; border-bottom:1px solid #f3f2f1; color:var(--text-muted);">
+              <span>${name}:</span> <em>Non-working</em>
+            </div>`;
+          }
+          const shiftsText = w.working_times.map(s => `${s.from_time.substring(0,5)}–${s.to_time.substring(0,5)}`).join(", ");
+          return `<div style="display:flex; justify-content:space-between; padding:0.2rem 0; border-bottom:1px solid #f3f2f1;">
+            <span><strong>${name}</strong>:</span> <span style="font-family:monospace; color:#004e8c; font-weight:600;">${shiftsText}</span>
+          </div>`;
+        }).join("") : `<div style="color:var(--text-muted); font-size:0.85rem;">Standard office: Mon–Fri 08:00–12:00, 13:00–17:00 (40h)</div>`;
+
         card.innerHTML = `
           <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-            <h3>${c.name} (${c.country_code})</h3>
-            <button class="btn btn-sm" onclick="importHolidaysForCal(${c.id})"><i class="fa-solid fa-cloud-arrow-down"></i> Sync Holidays</button>
+            <div>
+              <h3 style="margin-bottom:0.25rem;">${c.name}</h3>
+              <span class="badge" style="background:#e1dfdd;">Country: ${c.country_code}</span>
+            </div>
+            <div style="display:flex; gap:0.4rem;">
+              <button class="btn btn-sm btn-secondary" onclick="openCalendarScheduleModal(${c.id})"><i class="fa-solid fa-clock"></i> Edit Shifts</button>
+              <button class="btn btn-sm" onclick="importHolidaysForCal(${c.id})"><i class="fa-solid fa-cloud-arrow-down"></i> Sync Holidays</button>
+            </div>
           </div>
-          <div style="margin-top:0.75rem; font-size:0.85rem; color:var(--text-muted);">
-            Standard Working Shift: Mon–Fri 08:00–12:00, 13:00–17:00 (40h/week)
+
+          <h4 style="margin-top:1rem; font-size:0.85rem; color:#323130;"><i class="fa-solid fa-business-time"></i> Weekly Working Schedule:</h4>
+          <div style="margin-top:0.35rem; font-size:0.82rem; background:#faf9f8; padding:0.5rem 0.75rem; border-radius:4px; border:1px solid #edebe9;">
+            ${scheduleHtml}
           </div>
-          <h4 style="margin-top:1rem; font-size:0.9rem;">Holidays & Exceptions (${c.exceptions.length}):</h4>
-          <div style="max-height: 180px; overflow-y:auto; margin-top:0.5rem; font-size:0.8rem; border:1px solid #edebe9; border-radius:4px; padding:0.5rem;">
+
+          <h4 style="margin-top:1rem; font-size:0.85rem; color:#323130;"><i class="fa-solid fa-calendar-check"></i> Holidays & Non-Working Days (${c.exceptions.length}):</h4>
+          <div style="max-height: 140px; overflow-y:auto; margin-top:0.35rem; font-size:0.8rem; border:1px solid #edebe9; border-radius:4px; padding:0.5rem; background:white;">
             ${c.exceptions.map(e => `<div>📅 <strong>${e.from_date}</strong>: ${e.name}</div>`).join("")}
           </div>
         `;
         container.appendChild(card);
       });
+    }
+
+    function openCalendarScheduleModal(calId) {
+      editingCal = allCalendars.find(c => c.id === calId);
+      if (!editingCal) return;
+
+      document.getElementById("cal-schedule-cal-id").value = calId;
+      document.getElementById("cal-schedule-title").textContent = `Edit Schedule: ${editingCal.name}`;
+
+      const rowsContainer = document.getElementById("weekday-schedule-rows");
+      rowsContainer.innerHTML = "";
+
+      // Order: Monday (2) to Sunday (1)
+      const dayOrder = [2, 3, 4, 5, 6, 7, 1];
+
+      dayOrder.forEach(dayType => {
+        const name = DAY_NAMES[dayType];
+        const existingWd = (editingCal.weekdays || []).find(w => w.day_type === dayType);
+        const isWorking = existingWd ? existingWd.day_working : dayType !== 1 && dayType !== 7;
+        const shifts = (existingWd && existingWd.working_times && existingWd.working_times.length > 0)
+          ? existingWd.working_times
+          : (isWorking ? [{ from_time: "08:00:00", to_time: "17:00:00" }] : []);
+
+        const shift1From = shifts[0] ? shifts[0].from_time.substring(0, 5) : "08:00";
+        const shift1To = shifts[0] ? shifts[0].to_time.substring(0, 5) : "17:00";
+
+        const row = document.createElement("div");
+        row.className = "cal-day-row";
+        row.dataset.dayType = dayType;
+        row.style.cssText = "display:flex; align-items:center; justify-content:space-between; padding:0.4rem 0.5rem; border:1px solid #edebe9; border-radius:4px; background:#fff;";
+        row.innerHTML = `
+          <div style="display:flex; align-items:center; gap:0.5rem; width:130px;">
+            <input type="checkbox" id="wd-chk-${dayType}" class="wd-working-chk" ${isWorking ? "checked" : ""} onchange="toggleDayRowInputs(${dayType})">
+            <label for="wd-chk-${dayType}" style="font-weight:600; font-size:0.85rem; cursor:pointer;">${name}</label>
+          </div>
+          <div id="wd-inputs-${dayType}" style="display:flex; align-items:center; gap:0.5rem; opacity:${isWorking ? '1' : '0.4'};">
+            <span style="font-size:0.8rem; color:var(--text-muted);">From:</span>
+            <input type="time" class="wd-from" value="${shift1From}" style="padding:0.2rem; font-size:0.85rem;" ${isWorking ? "" : "disabled"}>
+            <span style="font-size:0.8rem; color:var(--text-muted);">To:</span>
+            <input type="time" class="wd-to" value="${shift1To}" style="padding:0.2rem; font-size:0.85rem;" ${isWorking ? "" : "disabled"}>
+          </div>
+        `;
+        rowsContainer.appendChild(row);
+      });
+
+      document.getElementById("calendar-schedule-modal").style.display = "flex";
+    }
+
+    function toggleDayRowInputs(dayType) {
+      const chk = document.getElementById(`wd-chk-${dayType}`);
+      const inputsDiv = document.getElementById(`wd-inputs-${dayType}`);
+      inputsDiv.style.opacity = chk.checked ? "1" : "0.4";
+      inputsDiv.querySelectorAll("input").forEach(i => i.disabled = !chk.checked);
+    }
+
+    function closeCalendarScheduleModal() {
+      document.getElementById("calendar-schedule-modal").style.display = "none";
+    }
+
+    function applyPresetSchedule(preset) {
+      const rows = document.querySelectorAll(".cal-day-row");
+      rows.forEach(r => {
+        const dayType = parseInt(r.dataset.dayType);
+        const chk = r.querySelector(".wd-working-chk");
+        const fromInput = r.querySelector(".wd-from");
+        const toInput = r.querySelector(".wd-to");
+
+        if (preset === "mon_sun_4h") {
+          // Mon-Sun 4h (13:00 to 17:00)
+          chk.checked = true;
+          fromInput.value = "13:00";
+          toInput.value = "17:00";
+        } else if (preset === "mon_fri_8h") {
+          // Mon-Fri 8h (08:00 to 17:00), Sat-Sun off
+          const isWeekday = dayType >= 2 && dayType <= 6;
+          chk.checked = isWeekday;
+          fromInput.value = "08:00";
+          toInput.value = "17:00";
+        }
+        toggleDayRowInputs(dayType);
+      });
+    }
+
+    async function saveCalendarSchedule() {
+      const calId = document.getElementById("cal-schedule-cal-id").value;
+      const weekdaysPayload = [];
+
+      document.querySelectorAll(".cal-day-row").forEach(r => {
+        const dayType = parseInt(r.dataset.dayType);
+        const isWorking = r.querySelector(".wd-working-chk").checked;
+        const fromVal = r.querySelector(".wd-from").value || "08:00";
+        const toVal = r.querySelector(".wd-to").value || "17:00";
+
+        const shifts = isWorking ? [
+          {
+            from_time: fromVal.length === 5 ? fromVal + ":00" : fromVal,
+            to_time: toVal.length === 5 ? toVal + ":00" : toVal
+          }
+        ] : [];
+
+        weekdaysPayload.push({
+          day_type: dayType,
+          day_working: isWorking,
+          working_times: shifts
+        });
+      });
+
+      try {
+        const resp = await fetch(`/api/calendars/${calId}/weekdays`, {
+          method: "PUT",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ weekdays: weekdaysPayload })
+        });
+
+        if (!resp.ok) {
+          const err = await resp.json();
+          alert("Error: " + (err.detail || "Failed to update calendar schedule"));
+          return;
+        }
+
+        alert("Calendar working schedule updated successfully!");
+        closeCalendarScheduleModal();
+        loadCalendars();
+      } catch (e) {
+        console.error("Save schedule error:", e);
+      }
     }
 
     async function importHolidaysForCal(calId) {
