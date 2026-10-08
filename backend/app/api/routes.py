@@ -447,3 +447,462 @@ def export_project_xml(template_req: ProjectTemplateRequest, db: Session = Depen
             "Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{quoted_filename}"
         },
     )
+
+
+# --- Project Management & Wizard Endpoints (Phase 2) ---
+
+from backend.app.db.models import (
+    ProjectDB,
+    ProjectTeamResourceDB,
+    StageDefinitionDB,
+    ProjectStageStatusDB,
+    ProjectSnapshotDB,
+)
+from backend.app.models.schemas import (
+    ProjectCreate,
+    ProjectBudgetUpdate,
+    StageDefinitionSchema,
+    StageDefinitionCreate,
+    StageStatusUpdate,
+    ProjectSnapshotCreate,
+    StageStatusEnum,
+)
+
+
+@router.get("/api/projects", tags=["Projects"])
+def list_projects(
+    owner: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    query = db.query(ProjectDB)
+    if owner:
+        query = query.filter(ProjectDB.owner.ilike(f"%{owner}%"))
+    if search:
+        query = query.filter(
+            (ProjectDB.name.ilike(f"%{search}%")) | (ProjectDB.erp_number.ilike(f"%{search}%"))
+        )
+    projects = query.all()
+    results = []
+    for p in projects:
+        results.append({
+            "id": p.id,
+            "project_guid": p.project_guid,
+            "erp_number": p.erp_number,
+            "name": p.name,
+            "owner": p.owner,
+            "start_date": p.start_date,
+            "calendar_id": p.calendar_id,
+            "budget_cost": p.budget_cost,
+            "created_at": p.created_at,
+            "team_resource_ids": [tm.resource_id for tm in p.team_members],
+        })
+    return results
+
+
+@router.post("/api/projects", status_code=status.HTTP_201_CREATED, tags=["Projects"])
+def create_project(
+    project_in: ProjectCreate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["PM", "Admin"])),
+):
+    # Check if ERP number exists
+    existing = db.query(ProjectDB).filter(ProjectDB.erp_number == project_in.erp_number).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Project with ERP number '{project_in.erp_number}' already exists.")
+
+    new_project = ProjectDB(
+        erp_number=project_in.erp_number,
+        name=project_in.name,
+        owner=project_in.owner,
+        calendar_id=project_in.calendar_id,
+        start_date=project_in.start_date,
+        budget_cost=project_in.budget_cost or 0.0,
+    )
+    db.add(new_project)
+    db.flush()
+
+    # Link team members
+    for r_id in project_in.team_resource_ids:
+        tm = ProjectTeamResourceDB(project_id=new_project.id, resource_id=r_id)
+        db.add(tm)
+
+    # Initialize stage statuses from active stage definitions
+    active_stages = db.query(StageDefinitionDB).filter(StageDefinitionDB.is_active == True).all()
+    for s_def in active_stages:
+        st_status = ProjectStageStatusDB(
+            project_id=new_project.id,
+            stage_id=s_def.id,
+            status=StageStatusEnum.NOT_DONE,
+            updated_by=user.email,
+        )
+        db.add(st_status)
+
+    # Initial snapshot
+    init_snap = ProjectSnapshotDB(
+        project_id=new_project.id,
+        percent_complete=0.0,
+        percent_work_complete=0.0,
+        start_date=project_in.start_date,
+        budget_cost=new_project.budget_cost,
+        source="MANUAL",
+    )
+    db.add(init_snap)
+
+    # Audit log
+    audit = AuditLogDB(
+        entity_type="PROJECT",
+        entity_id=str(new_project.id),
+        action="CREATE",
+        changed_by=user.email,
+        details=f"Project '{new_project.name}' created by {user.email}",
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(new_project)
+
+    return {
+        "id": new_project.id,
+        "project_guid": new_project.project_guid,
+        "erp_number": new_project.erp_number,
+        "name": new_project.name,
+        "owner": new_project.owner,
+        "budget_cost": new_project.budget_cost,
+        "team_resource_ids": project_in.team_resource_ids,
+        "stage_statuses": [
+            {"stage_id": ss.stage_id, "status": ss.status.value} for ss in new_project.stage_statuses
+        ],
+    }
+
+
+@router.get("/api/projects/{project_id}", tags=["Projects"])
+def get_project_details(project_id: int, db: Session = Depends(get_db)):
+    proj = db.query(ProjectDB).filter(ProjectDB.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    stages_dict = {
+        ss.stage_definition.code: {
+            "stage_id": ss.stage_id,
+            "name": ss.stage_definition.name,
+            "status": ss.status,
+            "updated_by": ss.updated_by,
+            "updated_at": ss.updated_at,
+        }
+        for ss in proj.stage_statuses if ss.stage_definition
+    }
+
+    latest_snapshot = proj.snapshots[0] if proj.snapshots else None
+
+    return {
+        "id": proj.id,
+        "project_guid": proj.project_guid,
+        "erp_number": proj.erp_number,
+        "name": proj.name,
+        "owner": proj.owner,
+        "start_date": proj.start_date,
+        "calendar_id": proj.calendar_id,
+        "budget_cost": proj.budget_cost,
+        "team_members": [
+            {
+                "id": tm.resource.id,
+                "name": tm.resource.name,
+                "resource_kind": tm.resource.resource_kind,
+                "is_generic": tm.resource.is_generic,
+            }
+            for tm in proj.team_members if tm.resource
+        ],
+        "stages": stages_dict,
+        "metrics": {
+            "percent_complete": latest_snapshot.percent_complete if latest_snapshot else 0.0,
+            "percent_work_complete": latest_snapshot.percent_work_complete if latest_snapshot else 0.0,
+            "start_date": latest_snapshot.start_date if latest_snapshot else proj.start_date,
+            "finish_date": latest_snapshot.finish_date if latest_snapshot else None,
+            "baseline_finish": latest_snapshot.baseline_finish if latest_snapshot else None,
+            "actual_cost": latest_snapshot.actual_cost if latest_snapshot else 0.0,
+            "cost": latest_snapshot.cost if latest_snapshot else 0.0,
+            "baseline_cost": latest_snapshot.baseline_cost if latest_snapshot else 0.0,
+            "baseline_budget": latest_snapshot.baseline_budget if latest_snapshot else 0.0,
+            "budget_cost": latest_snapshot.budget_cost if latest_snapshot else proj.budget_cost,
+        }
+    }
+
+
+@router.put("/api/projects/{project_id}/budget", tags=["Projects"])
+def update_project_budget(
+    project_id: int,
+    budget_in: ProjectBudgetUpdate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["FinanceManager", "Admin"])),
+):
+    proj = db.query(ProjectDB).filter(ProjectDB.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    old_budget = proj.budget_cost
+    proj.budget_cost = budget_in.budget_cost
+
+    # Update latest snapshot budget cost too
+    if proj.snapshots:
+        proj.snapshots[0].budget_cost = budget_in.budget_cost
+
+    audit = AuditLogDB(
+        entity_type="BUDGET",
+        entity_id=str(project_id),
+        action="UPDATE",
+        changed_by=user.email,
+        details=f"Budget updated from {old_budget} to {budget_in.budget_cost} by {user.email}",
+    )
+    db.add(audit)
+    db.commit()
+
+    return {"project_id": proj.id, "budget_cost": proj.budget_cost, "updated_by": user.email}
+
+
+@router.post("/api/projects/{project_id}/template/xml", tags=["Projects"])
+def export_project_template_by_id(project_id: int, db: Session = Depends(get_db)):
+    proj = db.query(ProjectDB).filter(ProjectDB.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    team_ids = [tm.resource_id for tm in proj.team_members]
+    if not team_ids:
+        # Default to all active resources if none explicitly attached
+        team_ids = [r.id for r in db.query(ResourceDB).filter(ResourceDB.is_active == True).all()]
+
+    template_req = ProjectTemplateRequest(
+        project_id=proj.id,
+        project_guid=proj.project_guid,
+        project_erp_number=proj.erp_number,
+        project_title=proj.name,
+        company_name="Enterprise Global",
+        start_date=proj.start_date or date.today(),
+        calendar_id=proj.calendar_id,
+        selected_resource_ids=team_ids,
+        budget_cost=proj.budget_cost,
+        custom_fields=[
+            CustomFieldDefinition(field_name="ERP Project Number", entity=CustomFieldEntityEnum.PROJECT, slot_number=1, alias="ERP Project Number"),
+            CustomFieldDefinition(field_name="Cost Center", entity=CustomFieldEntityEnum.RESOURCE, slot_number=1, alias="Cost Center"),
+        ],
+        project_custom_values={"ERP Project Number": proj.erp_number},
+    )
+
+    return export_project_xml(template_req, db=db)
+
+
+# --- Stage Definitions & Status Toggles (Phase 3) ---
+
+@router.get("/api/stages", tags=["Stages"])
+def list_stages(include_blocked: bool = Query(False), db: Session = Depends(get_db)):
+    query = db.query(StageDefinitionDB).order_by(StageDefinitionDB.sort_order)
+    if not include_blocked:
+        query = query.filter(StageDefinitionDB.is_active == True)
+    return query.all()
+
+
+@router.post("/api/stages", status_code=status.HTTP_201_CREATED, tags=["Stages"])
+def create_stage(
+    stage_in: StageDefinitionCreate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin"])),
+):
+    existing = db.query(StageDefinitionDB).filter(StageDefinitionDB.code == stage_in.code).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Stage code already exists")
+
+    new_stage = StageDefinitionDB(
+        name=stage_in.name,
+        code=stage_in.code,
+        sort_order=stage_in.sort_order,
+        is_active=True,
+    )
+    db.add(new_stage)
+    db.commit()
+    db.refresh(new_stage)
+
+    # Add default NOT_DONE status for all existing projects
+    all_projects = db.query(ProjectDB).all()
+    for p in all_projects:
+        st_status = ProjectStageStatusDB(
+            project_id=p.id,
+            stage_id=new_stage.id,
+            status=StageStatusEnum.NOT_DONE,
+            updated_by="system",
+        )
+        db.add(st_status)
+    db.commit()
+
+    return new_stage
+
+
+@router.put("/api/stages/{stage_id}/block", tags=["Stages"])
+def toggle_stage_blocked(
+    stage_id: int,
+    is_active: Optional[bool] = Query(None),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin"])),
+):
+    stage = db.query(StageDefinitionDB).filter(StageDefinitionDB.id == stage_id).first()
+    if not stage:
+        raise HTTPException(status_code=404, detail="Stage not found")
+
+    if is_active is not None:
+        stage.is_active = is_active
+    else:
+        stage.is_active = not stage.is_active
+    db.commit()
+    return {"id": stage.id, "name": stage.name, "is_active": stage.is_active}
+
+
+@router.put("/api/projects/{project_id}/stages/{stage_id}", tags=["Stages"])
+def update_project_stage_status(
+    project_id: int,
+    stage_id: int,
+    status_in: StageStatusUpdate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["PM", "FinanceManager", "Admin"])),
+):
+    proj = db.query(ProjectDB).filter(ProjectDB.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    stage_def = db.query(StageDefinitionDB).filter(StageDefinitionDB.id == stage_id).first()
+    if not stage_def:
+        raise HTTPException(status_code=404, detail="Stage not found")
+    if not stage_def.is_active:
+        raise HTTPException(status_code=400, detail="This stage is blocked by Admin and cannot be modified.")
+
+    # If PM, can only update own projects unless Admin or FinanceManager
+    if "PM" in user.roles and not user.has_any_role(["Admin", "FinanceManager"]):
+        is_owner = False
+        if not proj.owner:
+            is_owner = True
+        else:
+            owner_lower = proj.owner.lower()
+            tokens = [user.email.lower(), user.username.lower()]
+            if "@" in user.email:
+                tokens.append(user.email.split("@")[0].lower())
+            for t in tokens:
+                if t in owner_lower or owner_lower in t:
+                    is_owner = True
+                    break
+        if not is_owner:
+            raise HTTPException(status_code=403, detail="You can only update stages for your own projects.")
+
+    st_status = db.query(ProjectStageStatusDB).filter(
+        ProjectStageStatusDB.project_id == project_id,
+        ProjectStageStatusDB.stage_id == stage_id,
+    ).first()
+
+    if not st_status:
+        st_status = ProjectStageStatusDB(
+            project_id=project_id,
+            stage_id=stage_id,
+            status=status_in.status,
+            updated_by=user.email,
+        )
+        db.add(st_status)
+    else:
+        st_status.status = status_in.status
+        st_status.updated_by = user.email
+
+    audit = AuditLogDB(
+        entity_type="STAGE",
+        entity_id=f"{project_id}_{stage_id}",
+        action="UPDATE",
+        changed_by=user.email,
+        details=f"Stage {stage_id} set to {status_in.status.value} for project {proj.erp_number}",
+    )
+    db.add(audit)
+    db.commit()
+
+    return {
+        "project_id": project_id,
+        "stage_id": stage_id,
+        "status": st_status.status,
+        "updated_by": user.email,
+    }
+
+
+# --- Portfolio View Aggregation (Phase 3) ---
+
+@router.get("/api/portfolio", tags=["Portfolio"])
+def get_portfolio_view(db: Session = Depends(get_db)):
+    """
+    Returns enterprise project center view grouped by Owner (PM).
+    Matches the exact layout of the MS Project Online portfolio center.
+    """
+    active_stages = db.query(StageDefinitionDB).filter(StageDefinitionDB.is_active == True).order_by(StageDefinitionDB.sort_order).all()
+    stage_columns = [{"id": s.id, "name": s.name, "code": s.code} for s in active_stages]
+
+    projects = db.query(ProjectDB).all()
+
+    # Group projects by Owner
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for p in projects:
+        owner = p.owner or "Unassigned"
+        snap = p.snapshots[0] if p.snapshots else None
+
+        # Collect stage status values
+        stages_map = {}
+        for ss in p.stage_statuses:
+            if ss.stage_definition and ss.stage_definition.is_active:
+                stages_map[ss.stage_definition.code] = ss.status.value
+
+        p_data = {
+            "id": p.id,
+            "project_guid": p.project_guid,
+            "erp_number": p.erp_number,
+            "name": p.name,
+            "owner": p.owner,
+            "percent_complete": snap.percent_complete if snap else 0.0,
+            "percent_work_complete": snap.percent_work_complete if snap else 0.0,
+            "start_date": snap.start_date.isoformat() if (snap and snap.start_date) else (p.start_date.isoformat() if p.start_date else None),
+            "finish_date": snap.finish_date.isoformat() if (snap and snap.finish_date) else None,
+            "baseline_finish": snap.baseline_finish.isoformat() if (snap and snap.baseline_finish) else None,
+            "actual_cost": snap.actual_cost if snap else 0.0,
+            "cost": snap.cost if snap else 0.0,
+            "baseline_cost": snap.baseline_cost if snap else 0.0,
+            "baseline_budget": snap.baseline_budget if snap else 0.0,
+            "budget_cost": snap.budget_cost if snap else p.budget_cost,
+            "stages": stages_map,
+        }
+
+        if owner not in grouped:
+            grouped[owner] = []
+        grouped[owner].append(p_data)
+
+    # Compute group summaries (yellow summary rows from Project Center)
+    portfolio_groups = []
+    for owner, p_list in sorted(grouped.items()):
+        total_actual_cost = sum(p["actual_cost"] for p in p_list)
+        total_cost = sum(p["cost"] for p in p_list)
+        total_baseline_cost = sum(p["baseline_cost"] for p in p_list)
+        total_baseline_budget = sum(p["baseline_budget"] for p in p_list)
+        total_budget_cost = sum(p["budget_cost"] for p in p_list)
+
+        starts = [p["start_date"] for p in p_list if p["start_date"]]
+        finishes = [p["finish_date"] for p in p_list if p["finish_date"]]
+        earliest_start = min(starts) if starts else None
+        latest_finish = max(finishes) if finishes else None
+
+        portfolio_groups.append({
+            "owner": owner,
+            "project_count": len(p_list),
+            "summary": {
+                "start_date": earliest_start,
+                "finish_date": latest_finish,
+                "total_actual_cost": total_actual_cost,
+                "total_cost": total_cost,
+                "total_baseline_cost": total_baseline_cost,
+                "total_baseline_budget": total_baseline_budget,
+                "total_budget_cost": total_budget_cost,
+            },
+            "projects": p_list,
+        })
+
+    return {
+        "stage_columns": stage_columns,
+        "groups": portfolio_groups,
+    }
+

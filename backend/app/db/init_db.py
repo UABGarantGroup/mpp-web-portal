@@ -189,3 +189,207 @@ def init_db(db: Session) -> None:
         db.add_all(rates_res3)
 
         db.commit()
+
+    # 4. Seed Stage Definitions if empty
+    from backend.app.db.models import StageDefinitionDB, ProjectDB, ProjectStageStatusDB, ProjectSnapshotDB
+    from backend.app.models.enums import StageStatusEnum
+
+    if not db.query(StageDefinitionDB).first():
+        stages_data = [
+            ("Tabelis", "tabelis", 1),
+            ("Sąskaita", "saskaita", 2),
+            ("Darbų aktas", "darbu_aktas", 3),
+            ("Serviso raportas", "serviso_raportas", 4),
+            ("FWQ", "fwq", 5),
+            ("Evaluation Form", "evaluation_form", 6),
+            ("DSS", "dss", 7),
+            ("Admin", "admin", 8),
+        ]
+        created_stages = []
+        for name, code, order in stages_data:
+            s_def = StageDefinitionDB(name=name, code=code, sort_order=order, is_active=True)
+            db.add(s_def)
+            created_stages.append(s_def)
+        db.flush()
+
+        # 5. Seed Sample Projects if empty (from screenshot)
+        if not db.query(ProjectDB).first():
+            sample_projects = [
+                {
+                    "erp_number": "26-0537",
+                    "name": "26-0537 LA MANCHA KNUTSEN - assistance to Burckhardt",
+                    "owner": "Domas Krupavičius",
+                    "budget_cost": 332459.0,
+                    "percent_complete": 86.0,
+                    "percent_work_complete": 100.0,
+                    "start_date": date(2026, 8, 31),
+                    "finish_date": date(2026, 9, 24),
+                    "baseline_finish": date(2026, 9, 21),
+                    "actual_cost": 24819.0,
+                    "cost": 72780.0,
+                    "baseline_cost": 6980.0,
+                    "baseline_budget": 311305.0,
+                    "stages": {
+                        "tabelis": StageStatusEnum.DONE,
+                        "saskaita": StageStatusEnum.NOT_DONE,
+                        "darbu_aktas": StageStatusEnum.DONE,
+                        "serviso_raportas": StageStatusEnum.NOT_APPLICABLE,
+                        "fwq": StageStatusEnum.NOT_DONE,
+                        "evaluation_form": StageStatusEnum.NOT_DONE,
+                        "dss": StageStatusEnum.DONE,
+                        "admin": StageStatusEnum.NOT_DONE,
+                    }
+                },
+                {
+                    "erp_number": "26-0608",
+                    "name": "26-0608 AKRISIOS MAN B&W 6G50ME-C9",
+                    "owner": "Domas Krupavičius",
+                    "budget_cost": 13741.0,
+                    "percent_complete": 90.0,
+                    "percent_work_complete": 100.0,
+                    "start_date": date(2026, 9, 19),
+                    "finish_date": date(2026, 9, 30),
+                    "baseline_finish": date(2026, 9, 30),
+                    "actual_cost": 8264.0,
+                    "cost": 8264.0,
+                    "baseline_cost": 5700.0,
+                    "baseline_budget": 12000.0,
+                    "stages": {
+                        "tabelis": StageStatusEnum.DONE,
+                        "saskaita": StageStatusEnum.NOT_DONE,
+                        "darbu_aktas": StageStatusEnum.NOT_DONE,
+                        "serviso_raportas": StageStatusEnum.NOT_DONE,
+                        "fwq": StageStatusEnum.NOT_DONE,
+                        "evaluation_form": StageStatusEnum.NOT_DONE,
+                        "dss": StageStatusEnum.NOT_DONE,
+                        "admin": StageStatusEnum.NOT_DONE,
+                    }
+                },
+                {
+                    "erp_number": "25-0980",
+                    "name": "25-0980 Pikasoima IGG katilu apsauga",
+                    "owner": "Irma Maslauskaitė Voitkevič",
+                    "budget_cost": 1540.0,
+                    "percent_complete": 67.0,
+                    "percent_work_complete": 100.0,
+                    "start_date": date(2023, 11, 6),
+                    "finish_date": date(2023, 11, 7),
+                    "baseline_finish": date(2025, 11, 12),
+                    "actual_cost": 312.0,
+                    "cost": 320.4,
+                    "baseline_cost": 700.0,
+                    "baseline_budget": 640.0,
+                    "stages": {
+                        "tabelis": StageStatusEnum.NOT_APPLICABLE,
+                        "saskaita": StageStatusEnum.DONE,
+                        "darbu_aktas": StageStatusEnum.NOT_DONE,
+                        "serviso_raportas": StageStatusEnum.NOT_DONE,
+                        "fwq": StageStatusEnum.NOT_DONE,
+                        "evaluation_form": StageStatusEnum.NOT_DONE,
+                        "dss": StageStatusEnum.DONE,
+                        "admin": StageStatusEnum.NOT_DONE,
+                    }
+                },
+                {
+                    "erp_number": "25-1021",
+                    "name": "25-1021 Rubyland Camshaft removal on Yanmar 6EY26 DD",
+                    "owner": "Šarūnas Krasauskas",
+                    "budget_cost": 202111.0,
+                    "percent_complete": 99.0,
+                    "percent_work_complete": 100.0,
+                    "start_date": date(2026, 9, 27),
+                    "finish_date": date(2026, 10, 2),
+                    "baseline_finish": date(2026, 9, 19),
+                    "actual_cost": 64648.0,
+                    "cost": 111440.5,
+                    "baseline_cost": 6002.0,
+                    "baseline_budget": 10000.0,
+                    "stages": {
+                        "tabelis": StageStatusEnum.DONE,
+                        "saskaita": StageStatusEnum.DONE,
+                        "darbu_aktas": StageStatusEnum.NOT_DONE,
+                        "serviso_raportas": StageStatusEnum.DONE,
+                        "fwq": StageStatusEnum.NOT_DONE,
+                        "evaluation_form": StageStatusEnum.NOT_DONE,
+                        "dss": StageStatusEnum.DONE,
+                        "admin": StageStatusEnum.NOT_DONE,
+                    }
+                },
+                {
+                    "erp_number": "26-0183",
+                    "name": "26-0183 SEABOARD PIONEER - AE2 WARTSILA 8L20 OVH",
+                    "owner": "Vygantas Misevičius",
+                    "budget_cost": 77958.0,
+                    "percent_complete": 91.0,
+                    "percent_work_complete": 100.0,
+                    "start_date": date(2026, 8, 17),
+                    "finish_date": date(2026, 8, 25),
+                    "baseline_finish": date(2026, 9, 5),
+                    "actual_cost": 4889.16,
+                    "cost": 75391.46,
+                    "baseline_cost": 28096.0,
+                    "baseline_budget": 61000.0,
+                    "stages": {
+                        "tabelis": StageStatusEnum.NOT_DONE,
+                        "saskaita": StageStatusEnum.DONE,
+                        "darbu_aktas": StageStatusEnum.NOT_DONE,
+                        "serviso_raportas": StageStatusEnum.NOT_DONE,
+                        "fwq": StageStatusEnum.NOT_DONE,
+                        "evaluation_form": StageStatusEnum.NOT_DONE,
+                        "dss": StageStatusEnum.DONE,
+                        "admin": StageStatusEnum.NOT_DONE,
+                    }
+                }
+            ]
+
+            for p_dict in sample_projects:
+                stages_map = p_dict.pop("stages")
+                pct = p_dict.pop("percent_complete")
+                pct_w = p_dict.pop("percent_work_complete")
+                f_date = p_dict.pop("finish_date")
+                b_finish = p_dict.pop("baseline_finish")
+                act_cost = p_dict.pop("actual_cost")
+                cost_val = p_dict.pop("cost")
+                b_cost = p_dict.pop("baseline_cost")
+                b_budg = p_dict.pop("baseline_budget")
+
+                proj = ProjectDB(
+                    erp_number=p_dict["erp_number"],
+                    name=p_dict["name"],
+                    owner=p_dict["owner"],
+                    start_date=p_dict["start_date"],
+                    budget_cost=p_dict["budget_cost"],
+                    calendar_id=1,
+                )
+                db.add(proj)
+                db.flush()
+
+                # Add snapshot
+                snap = ProjectSnapshotDB(
+                    project_id=proj.id,
+                    percent_complete=pct,
+                    percent_work_complete=pct_w,
+                    start_date=p_dict["start_date"],
+                    finish_date=f_date,
+                    baseline_finish=b_finish,
+                    actual_cost=act_cost,
+                    cost=cost_val,
+                    baseline_cost=b_cost,
+                    baseline_budget=b_budg,
+                    budget_cost=p_dict["budget_cost"],
+                    source="MANUAL",
+                )
+                db.add(snap)
+
+                # Add stage statuses
+                for s_def in created_stages:
+                    st_val = stages_map.get(s_def.code, StageStatusEnum.NOT_DONE)
+                    st_status = ProjectStageStatusDB(
+                        project_id=proj.id,
+                        stage_id=s_def.id,
+                        status=st_val,
+                        updated_by="system",
+                    )
+                    db.add(st_status)
+
+        db.commit()

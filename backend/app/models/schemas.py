@@ -79,3 +79,50 @@ class ProjectTemplateRequest(BaseModel):
     budget_cost: Optional[float] = Field(default=None, description="Project budget set by Finance Manager")
     custom_fields: List[CustomFieldDefinition] = Field(default_factory=list)
     project_custom_values: Dict[str, str] = Field(default_factory=dict)
+
+
+class ProjectCreate(BaseModel):
+    erp_number: str = Field(..., description="Unique ERP project code, e.g. '26-0537'")
+    name: str = Field(..., description="Project name")
+    owner: str = Field(..., description="Project Manager name or email")
+    calendar_id: int = Field(default=1)
+    start_date: date = Field(default_factory=date.today)
+    budget_cost: Optional[float] = Field(default=0.0)
+    team_resource_ids: List[int] = Field(default_factory=list)
+
+
+class ProjectBudgetUpdate(BaseModel):
+    budget_cost: float = Field(..., ge=0.0, description="Project budget cost set by Finance Manager")
+
+
+class StageDefinitionSchema(BaseModel):
+    id: int
+    name: str
+    code: str
+    sort_order: int
+    is_active: bool
+
+
+class StageDefinitionCreate(BaseModel):
+    name: str
+    code: str
+    sort_order: int = 0
+
+
+class StageStatusUpdate(BaseModel):
+    status: StageStatusEnum
+
+
+class ProjectSnapshotCreate(BaseModel):
+    percent_complete: float = 0.0
+    percent_work_complete: float = 0.0
+    start_date: Optional[date] = None
+    finish_date: Optional[date] = None
+    baseline_finish: Optional[date] = None
+    actual_cost: float = 0.0
+    cost: float = 0.0
+    baseline_cost: float = 0.0
+    baseline_budget: float = 0.0
+    budget_cost: float = 0.0
+    source: str = "MANUAL"
+

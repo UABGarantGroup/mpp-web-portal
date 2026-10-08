@@ -33,6 +33,7 @@ from backend.app.models.enums import (
     RateTableEnum,
     ResourceKindEnum,
     ResourceTypeEnum,
+    StageStatusEnum,
 )
 
 
@@ -171,19 +172,83 @@ class ProjectDB(Base):
     erp_number = Column(String(64), unique=True, index=True, nullable=False)  # e.g., "26-0537"
     name = Column(String(255), nullable=False)
     owner = Column(String(255), nullable=True, index=True)  # PM name / email
+    start_date = Column(Date, nullable=True)
     calendar_id = Column(Integer, ForeignKey("calendars.id"), default=1, nullable=False)
     budget_cost = Column(Float, default=0.0, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    stage_statuses = relationship("ProjectStageStatusDB", back_populates="project", cascade="all, delete-orphan")
+    snapshots = relationship("ProjectSnapshotDB", back_populates="project", cascade="all, delete-orphan", order_by="desc(ProjectSnapshotDB.recorded_at)")
+    team_members = relationship("ProjectTeamResourceDB", back_populates="project", cascade="all, delete-orphan")
+
+
+class ProjectTeamResourceDB(Base):
+    __tablename__ = "project_team_resources"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    resource_id = Column(Integer, ForeignKey("resources.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    project = relationship("ProjectDB", back_populates="team_members")
+    resource = relationship("ResourceDB")
+
+
+class StageDefinitionDB(Base):
+    __tablename__ = "stage_definitions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    code = Column(String(64), unique=True, nullable=False)  # e.g. "tabelis", "saskaita"
+    sort_order = Column(Integer, default=0, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)  # Blocked when False
+
+    stage_statuses = relationship("ProjectStageStatusDB", back_populates="stage_definition", cascade="all, delete-orphan")
+
+
+class ProjectStageStatusDB(Base):
+    __tablename__ = "project_stage_statuses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    stage_id = Column(Integer, ForeignKey("stage_definitions.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(SQLEnum(StageStatusEnum), default=StageStatusEnum.NOT_DONE, nullable=False)
+    updated_by = Column(String(255), nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    project = relationship("ProjectDB", back_populates="stage_statuses")
+    stage_definition = relationship("StageDefinitionDB", back_populates="stage_statuses")
+
+
+class ProjectSnapshotDB(Base):
+    __tablename__ = "project_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    percent_complete = Column(Float, default=0.0, nullable=False)
+    percent_work_complete = Column(Float, default=0.0, nullable=False)
+    start_date = Column(Date, nullable=True)
+    finish_date = Column(Date, nullable=True)
+    baseline_finish = Column(Date, nullable=True)
+    actual_cost = Column(Float, default=0.0, nullable=False)
+    cost = Column(Float, default=0.0, nullable=False)
+    baseline_cost = Column(Float, default=0.0, nullable=False)
+    baseline_budget = Column(Float, default=0.0, nullable=False)
+    budget_cost = Column(Float, default=0.0, nullable=False)
+    source = Column(String(50), default="MANUAL", nullable=False)  # "MANUAL" or "UPLOAD"
+    recorded_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    project = relationship("ProjectDB", back_populates="snapshots")
 
 
 class AuditLogDB(Base):
     __tablename__ = "audit_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    entity_type = Column(String(50), nullable=False, index=True)  # "RESOURCE", "RATE", "BUDGET", "CALENDAR"
+    entity_type = Column(String(50), nullable=False, index=True)  # "RESOURCE", "RATE", "BUDGET", "CALENDAR", "STAGE"
     entity_id = Column(String(64), nullable=False, index=True)
     action = Column(String(50), nullable=False)                   # "CREATE", "UPDATE", "SOFT_DELETE"
     changed_by = Column(String(255), nullable=False)
     details = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
