@@ -45,6 +45,7 @@ class CalendarDB(Base):
     country_code = Column(String(10), default="LT", nullable=False)
     is_base_calendar = Column(Boolean, default=True, nullable=False)
     base_calendar_uid = Column(Integer, default=-1, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

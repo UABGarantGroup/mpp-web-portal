@@ -33,6 +33,7 @@ from backend.app.models.schemas import (
     CalendarCreate,
     CalendarException,
     CalendarModel,
+    CalendarUpdate,
     CalendarWeekdaysUpdate,
     CostRateItem,
     CustomFieldDefinition,
@@ -85,14 +86,18 @@ def map_db_calendar_to_model(c: CalendarDB) -> CalendarModel:
         country_code=c.country_code,
         is_base_calendar=c.is_base_calendar,
         base_calendar_uid=c.base_calendar_uid,
+        is_active=c.is_active,
         weekdays=weekdays,
         exceptions=exceptions,
     )
 
 
 @router.get("/api/calendars", response_model=List[CalendarModel], tags=["Calendars"])
-def list_calendars(db: Session = Depends(get_db)):
-    cal_dbs = db.query(CalendarDB).all()
+def list_calendars(include_inactive: bool = Query(False), db: Session = Depends(get_db)):
+    query = db.query(CalendarDB)
+    if not include_inactive:
+        query = query.filter(CalendarDB.is_active == True)
+    cal_dbs = query.all()
     return [map_db_calendar_to_model(c) for c in cal_dbs]
 
 
@@ -109,6 +114,45 @@ def get_calendar(calendar_id: int, db: Session = Depends(get_db)):
     return map_db_calendar_to_model(cal)
 
 
+@router.put("/api/calendars/{calendar_id}", response_model=CalendarModel, tags=["Calendars"])
+def update_calendar(
+    calendar_id: int,
+    cal_update: CalendarUpdate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin"])),
+):
+    cal = db.query(CalendarDB).filter(CalendarDB.id == calendar_id).first()
+    if not cal:
+        raise HTTPException(status_code=404, detail="Calendar not found")
+
+    if cal_update.name is not None and cal_update.name.strip():
+        cal.name = cal_update.name.strip()
+    if cal_update.country_code is not None and cal_update.country_code.strip():
+        cal.country_code = cal_update.country_code.strip()
+    if cal_update.is_active is not None:
+        cal.is_active = cal_update.is_active
+
+    db.commit()
+    db.refresh(cal)
+    return map_db_calendar_to_model(cal)
+
+
+@router.put("/api/calendars/{calendar_id}/hide", response_model=CalendarModel, tags=["Calendars"])
+def toggle_hide_calendar(
+    calendar_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin"])),
+):
+    cal = db.query(CalendarDB).filter(CalendarDB.id == calendar_id).first()
+    if not cal:
+        raise HTTPException(status_code=404, detail="Calendar not found")
+
+    cal.is_active = not cal.is_active
+    db.commit()
+    db.refresh(cal)
+    return map_db_calendar_to_model(cal)
+
+
 @router.post("/api/calendars", response_model=CalendarModel, status_code=status.HTTP_201_CREATED, tags=["Calendars"])
 def create_calendar(
     cal_in: CalendarCreate,
@@ -120,6 +164,7 @@ def create_calendar(
         country_code=cal_in.country_code,
         is_base_calendar=True,
         base_calendar_uid=-1,
+        is_active=cal_in.is_active if cal_in.is_active is not None else True,
     )
     db.add(new_cal)
     db.flush()

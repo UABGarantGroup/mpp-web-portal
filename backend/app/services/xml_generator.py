@@ -188,75 +188,80 @@ def build_ms_project_xml(
     # 3. Calendars Definition
     calendars_el = ET.SubElement(root, "Calendars")
 
-    # Write Base Calendar
-    cal_el = ET.SubElement(calendars_el, "Calendar")
-    ET.SubElement(cal_el, "UID").text = str(selected_cal.id)
-    ET.SubElement(cal_el, "Name").text = selected_cal.name
-    ET.SubElement(cal_el, "IsBaseCalendar").text = "1"
-    ET.SubElement(cal_el, "BaseCalendarUID").text = "-1"
+    # Write Base Calendars (All Active Enterprise Calendars)
+    active_base_calendars = [c for c in calendars.values() if getattr(c, "is_active", True)]
+    if selected_cal.id not in [c.id for c in active_base_calendars]:
+        active_base_calendars.insert(0, selected_cal)
 
-    # Write WeekDays with configured working hours (Mon-Sun)
-    weekdays_el = ET.SubElement(cal_el, "WeekDays")
-    weekday_map = {wd.day_type: wd for wd in selected_cal.weekdays} if selected_cal.weekdays else {}
+    for cal_item in active_base_calendars:
+        cal_el = ET.SubElement(calendars_el, "Calendar")
+        ET.SubElement(cal_el, "UID").text = str(cal_item.id)
+        ET.SubElement(cal_el, "Name").text = cal_item.name
+        ET.SubElement(cal_el, "IsBaseCalendar").text = "1"
+        ET.SubElement(cal_el, "BaseCalendarUID").text = "-1"
 
-    for day_type in range(1, 8):  # 1=Sunday, 2=Monday, ..., 7=Saturday
-        wd_el = ET.SubElement(weekdays_el, "WeekDay")
-        ET.SubElement(wd_el, "DayType").text = str(day_type)
+        # Write WeekDays with configured working hours (Mon-Sun)
+        weekdays_el = ET.SubElement(cal_el, "WeekDays")
+        weekday_map = {wd.day_type: wd for wd in cal_item.weekdays} if cal_item.weekdays else {}
 
-        if day_type in weekday_map:
-            wd_model = weekday_map[day_type]
-            if wd_model.day_working and wd_model.working_times:
-                ET.SubElement(wd_el, "DayWorking").text = "1"
-                wtimes_el = ET.SubElement(wd_el, "WorkingTimes")
-                for shift in wd_model.working_times:
-                    wt = ET.SubElement(wtimes_el, "WorkingTime")
-                    ET.SubElement(wt, "FromTime").text = shift.from_time
-                    ET.SubElement(wt, "ToTime").text = shift.to_time
+        for day_type in range(1, 8):  # 1=Sunday, 2=Monday, ..., 7=Saturday
+            wd_el = ET.SubElement(weekdays_el, "WeekDay")
+            ET.SubElement(wd_el, "DayType").text = str(day_type)
+
+            if day_type in weekday_map:
+                wd_model = weekday_map[day_type]
+                if wd_model.day_working and wd_model.working_times:
+                    ET.SubElement(wd_el, "DayWorking").text = "1"
+                    wtimes_el = ET.SubElement(wd_el, "WorkingTimes")
+                    for shift in wd_model.working_times:
+                        wt = ET.SubElement(wtimes_el, "WorkingTime")
+                        ET.SubElement(wt, "FromTime").text = shift.from_time
+                        ET.SubElement(wt, "ToTime").text = shift.to_time
+                else:
+                    ET.SubElement(wd_el, "DayWorking").text = "0"
             else:
-                ET.SubElement(wd_el, "DayWorking").text = "0"
-        else:
-            # Fallback to standard 40h working week (Mon-Fri 08-12, 13-17)
-            if day_type in (1, 7):  # Weekend
-                ET.SubElement(wd_el, "DayWorking").text = "0"
-            else:  # Working day
-                ET.SubElement(wd_el, "DayWorking").text = "1"
-                wtimes_el = ET.SubElement(wd_el, "WorkingTimes")
-                wt1 = ET.SubElement(wtimes_el, "WorkingTime")
-                ET.SubElement(wt1, "FromTime").text = "08:00:00"
-                ET.SubElement(wt1, "ToTime").text = "12:00:00"
-                wt2 = ET.SubElement(wtimes_el, "WorkingTime")
-                ET.SubElement(wt2, "FromTime").text = "13:00:00"
-                ET.SubElement(wt2, "ToTime").text = "17:00:00"
+                # Fallback to standard 40h working week (Mon-Fri 08-12, 13-17)
+                if day_type in (1, 7):  # Weekend
+                    ET.SubElement(wd_el, "DayWorking").text = "0"
+                else:  # Working day
+                    ET.SubElement(wd_el, "DayWorking").text = "1"
+                    wtimes_el = ET.SubElement(wd_el, "WorkingTimes")
+                    wt1 = ET.SubElement(wtimes_el, "WorkingTime")
+                    ET.SubElement(wt1, "FromTime").text = "08:00:00"
+                    ET.SubElement(wt1, "ToTime").text = "12:00:00"
+                    wt2 = ET.SubElement(wtimes_el, "WorkingTime")
+                    ET.SubElement(wt2, "FromTime").text = "13:00:00"
+                    ET.SubElement(wt2, "ToTime").text = "17:00:00"
 
-    # Write Exceptions nested inside <TimePeriod>
-    if selected_cal.exceptions:
-        exceptions_el = ET.SubElement(cal_el, "Exceptions")
-        # Sort exceptions chronologically
-        sorted_exceptions = sorted(selected_cal.exceptions, key=lambda x: x.from_date)
-        for exc in sorted_exceptions:
-            exc_el = ET.SubElement(exceptions_el, "Exception")
-            ET.SubElement(exc_el, "EnteredByOccurrences").text = "0"
+        # Write Exceptions nested inside <TimePeriod>
+        if cal_item.exceptions:
+            exceptions_el = ET.SubElement(cal_el, "Exceptions")
+            sorted_exceptions = sorted(cal_item.exceptions, key=lambda x: x.from_date)
+            for exc in sorted_exceptions:
+                exc_el = ET.SubElement(exceptions_el, "Exception")
+                ET.SubElement(exc_el, "EnteredByOccurrences").text = "0"
 
-            tp_el = ET.SubElement(exc_el, "TimePeriod")
-            ET.SubElement(tp_el, "FromDate").text = f"{exc.from_date.isoformat()}T00:00:00"
-            ET.SubElement(tp_el, "ToDate").text = f"{exc.to_date.isoformat()}T23:59:59"
+                tp_el = ET.SubElement(exc_el, "TimePeriod")
+                ET.SubElement(tp_el, "FromDate").text = f"{exc.from_date.isoformat()}T00:00:00"
+                ET.SubElement(tp_el, "ToDate").text = f"{exc.to_date.isoformat()}T23:59:59"
 
-            ET.SubElement(exc_el, "Occurrences").text = "1"
-            ET.SubElement(exc_el, "Name").text = exc.name
-            ET.SubElement(exc_el, "Type").text = "1"
-            ET.SubElement(exc_el, "DayWorking").text = "1" if exc.working else "0"
+                ET.SubElement(exc_el, "Occurrences").text = "1"
+                ET.SubElement(exc_el, "Name").text = exc.name
+                ET.SubElement(exc_el, "Type").text = "1"
+                ET.SubElement(exc_el, "DayWorking").text = "1" if exc.working else "0"
 
-    # Write Resource-Specific Derived Calendars
-    for res_id in template_req.selected_resource_ids:
-        res = resources.get(res_id)
-        if not res or not res.is_active:
-            continue
+    # Write Resource-Specific Derived Calendars (ALL Active Resources)
+    active_resources = sorted([r for r in resources.values() if r.is_active], key=lambda x: x.id)
+    active_base_uids = {c.id for c in active_base_calendars}
+
+    for res in active_resources:
         res_cal_el = ET.SubElement(calendars_el, "Calendar")
         res_cal_uid = 1000 + res.id
         ET.SubElement(res_cal_el, "UID").text = str(res_cal_uid)
         ET.SubElement(res_cal_el, "Name").text = res.name
         ET.SubElement(res_cal_el, "IsBaseCalendar").text = "0"
-        ET.SubElement(res_cal_el, "BaseCalendarUID").text = str(selected_cal.id)
+        res_base_id = res.base_calendar_id if res.base_calendar_id in active_base_uids else selected_cal.id
+        ET.SubElement(res_cal_el, "BaseCalendarUID").text = str(res_base_id)
 
     # 4. Tasks (Project Summary Task UID 0)
     tasks_el = ET.SubElement(root, "Tasks")
@@ -315,15 +320,8 @@ def build_ms_project_xml(
         ET.SubElement(b_res, "IsGeneric").text = "0"
         ET.SubElement(b_res, "IsInactive").text = "0"
 
-    # Enterprise Resources
-    for res_id in template_req.selected_resource_ids:
-        res = resources.get(res_id)
-        if not res:
-            continue
-        if not res.is_active:
-            # Soft delete rule: exclude inactive resources from NEW templates
-            continue
-
+    # Enterprise Resources: ALL Active Resources exported to Project desktop
+    for res in active_resources:
         res_el = ET.SubElement(resources_el, "Resource")
         # Stable UID and ID
         ET.SubElement(res_el, "UID").text = str(res.id)

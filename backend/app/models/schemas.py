@@ -49,6 +49,7 @@ class CalendarModel(BaseModel):
     country_code: str = Field(default="LT", description="ISO 3166-1 alpha-2 country code")
     is_base_calendar: bool = True
     base_calendar_uid: Optional[int] = -1
+    is_active: bool = True
     weekdays: List[WeekDayModel] = Field(default_factory=list)
     exceptions: List[CalendarException] = Field(default_factory=list)
 
@@ -56,7 +57,14 @@ class CalendarModel(BaseModel):
 class CalendarCreate(BaseModel):
     name: str
     country_code: str = "LT"
+    is_active: bool = True
     weekdays: Optional[List[WeekDayModel]] = None
+
+
+class CalendarUpdate(BaseModel):
+    name: Optional[str] = None
+    country_code: Optional[str] = None
+    is_active: Optional[bool] = None
 
 
 class CalendarWeekdaysUpdate(BaseModel):

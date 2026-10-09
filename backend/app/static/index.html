@@ -261,8 +261,21 @@
     <!-- TAB 4: CALENDARS & HOLIDAYS -->
     <section id="tab-calendars" style="display: none;">
       <div class="card">
-        <h2><i class="fa-solid fa-calendar-days" style="color: var(--primary);"></i> National Base Calendars & Holiday Sets</h2>
-        <div id="calendars-container" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 1.5rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem; margin-bottom:1.25rem;">
+          <div>
+            <h2 style="margin:0;"><i class="fa-solid fa-calendar-days" style="color: var(--primary);"></i> National Base Calendars & Working Shift Schedules</h2>
+            <div style="font-size:0.82rem; color:var(--text-muted); margin-top:0.25rem;">
+              Enterprise work weeks, shift hours, and holiday sets exported to Microsoft Project desktop.
+            </div>
+          </div>
+          <div style="display:flex; align-items:center; gap:0.75rem;">
+            <label style="display:flex; align-items:center; gap:0.4rem; font-size:0.85rem; cursor:pointer; background:#f3f2f1; padding:0.35rem 0.65rem; border-radius:4px; border:1px solid #d2d0ce;">
+              <input type="checkbox" id="show-hidden-cals-chk" onchange="loadCalendars()"> Show Hidden Calendars
+            </label>
+            <button class="btn" onclick="openNewCalendarModal()"><i class="fa-solid fa-plus"></i> Add New Calendar</button>
+          </div>
+        </div>
+        <div id="calendars-container" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 1.5rem;">
           <!-- Calendars cards -->
         </div>
       </div>
@@ -371,6 +384,54 @@
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="closeCalendarScheduleModal()">Cancel</button>
         <button class="btn" onclick="saveCalendarSchedule()"><i class="fa-solid fa-floppy-disk"></i> Save Schedule</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add New Calendar Modal -->
+  <div id="new-calendar-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="max-width: 520px;">
+      <div class="modal-header">
+        <h3><i class="fa-solid fa-calendar-plus" style="color:var(--primary);"></i> Add New Calendar</h3>
+        <button style="border:none;background:none;font-size:1.2rem;cursor:pointer;" onclick="closeNewCalendarModal()">&times;</button>
+      </div>
+      <div class="form-group" style="margin-bottom:1rem;">
+        <label>Calendar Name *</label>
+        <input type="text" id="new-cal-name" placeholder="e.g. Lithuania – Evening Shift 20h" style="padding:0.45rem;">
+      </div>
+      <div class="form-group" style="margin-bottom:1rem;">
+        <label>Country Code (for holiday sync)</label>
+        <input type="text" id="new-cal-country" value="LT" maxlength="5" style="text-transform:uppercase; padding:0.45rem; width:120px;">
+      </div>
+      <div class="form-group" style="margin-bottom:1rem;">
+        <label>Initial Work Week Schedule</label>
+        <select id="new-cal-preset" style="padding:0.45rem;">
+          <option value="mon_fri_8h">Standard Office: Mon–Fri 8h (08:00–12:00, 13:00–17:00, Sat–Sun off)</option>
+          <option value="mon_sun_4h">User Special: Mon–Sun 4h (13:00–17:00, 7 days/week)</option>
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeNewCalendarModal()">Cancel</button>
+        <button class="btn" onclick="submitCreateCalendar()"><i class="fa-solid fa-plus"></i> Create Calendar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Calendar Name Modal -->
+  <div id="edit-calendar-name-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="max-width: 480px;">
+      <div class="modal-header">
+        <h3><i class="fa-solid fa-pen-to-square" style="color:var(--primary);"></i> Edit Calendar Name</h3>
+        <button style="border:none;background:none;font-size:1.2rem;cursor:pointer;" onclick="closeEditCalendarNameModal()">&times;</button>
+      </div>
+      <input type="hidden" id="edit-cal-name-id">
+      <div class="form-group" style="margin-bottom:1rem;">
+        <label>Calendar Name *</label>
+        <input type="text" id="edit-cal-name-input" style="padding:0.5rem; font-size:0.95rem;">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeEditCalendarNameModal()">Cancel</button>
+        <button class="btn" onclick="submitEditCalendarName()"><i class="fa-solid fa-floppy-disk"></i> Save Name</button>
       </div>
     </div>
   </div>
@@ -580,8 +641,8 @@
     // --- CREATE PROJECT TAB ---
 
     async function prepareNewProjectTab() {
-      // Load calendars
-      const calResp = await fetch("/api/calendars", { headers: getAuthHeaders() });
+      // Load active calendars only
+      const calResp = await fetch("/api/calendars?include_inactive=false", { headers: getAuthHeaders() });
       allCalendars = await calResp.json();
       const calSelect = document.getElementById("proj-calendar");
       calSelect.innerHTML = allCalendars.map(c => `<option value="${c.id}">${c.name}</option>`).join("");
@@ -737,16 +798,38 @@
 
     let editingCal = null;
 
+    function escapeHtml(str) {
+      if (!str) return "";
+      return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    function escapeQuote(str) {
+      if (!str) return "";
+      return String(str).replace(/'/g, "\\'").replace(/"/g, "&quot;");
+    }
+
     async function loadCalendars() {
-      const resp = await fetch("/api/calendars", { headers: getAuthHeaders() });
+      const showHidden = document.getElementById("show-hidden-cals-chk") ? document.getElementById("show-hidden-cals-chk").checked : false;
+      const resp = await fetch(`/api/calendars?include_inactive=${showHidden}`, { headers: getAuthHeaders() });
       allCalendars = await resp.json();
       const container = document.getElementById("calendars-container");
       container.innerHTML = "";
+
+      if (allCalendars.length === 0) {
+        container.innerHTML = `<div style="grid-column: 1/-1; padding: 2rem; text-align: center; color: var(--text-muted); background: white; border: 1px dashed #d2d0ce; border-radius: 4px;">
+          No calendars found matching the filter.
+        </div>`;
+        return;
+      }
 
       allCalendars.forEach(c => {
         const card = document.createElement("div");
         card.className = "card";
         card.style.margin = "0";
+        if (!c.is_active) {
+          card.style.opacity = "0.75";
+          card.style.background = "#faf9f8";
+        }
 
         // Sort weekdays Mon (2) to Sun (1)
         const sortedWds = [...(c.weekdays || [])].sort((a, b) => {
@@ -768,14 +851,26 @@
         }).join("") : `<div style="color:var(--text-muted); font-size:0.85rem;">Standard office: Mon–Fri 08:00–12:00, 13:00–17:00 (40h)</div>`;
 
         card.innerHTML = `
-          <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:0.5rem;">
             <div>
-              <h3 style="margin-bottom:0.25rem;">${c.name}</h3>
-              <span class="badge" style="background:#e1dfdd;">Country: ${c.country_code}</span>
+              <div style="display:flex; align-items:center; gap:0.45rem;">
+                <h3 style="margin:0; font-size:1.05rem;">${escapeHtml(c.name)}</h3>
+                <button class="btn btn-sm btn-secondary" title="Rename calendar" onclick="openEditCalendarNameModal(${c.id}, '${escapeQuote(c.name)}')">
+                  <i class="fa-solid fa-pen"></i>
+                </button>
+              </div>
+              <div style="margin-top:0.35rem; display:flex; gap:0.4rem; align-items:center;">
+                <span class="badge" style="background:#e1dfdd;">Country: ${c.country_code}</span>
+                ${c.is_active ? '<span class="badge" style="background:#dff6dd; color:#107c41;">Active</span>' : '<span class="badge" style="background:#fde7e9; color:#a80000;">Hidden</span>'}
+              </div>
             </div>
-            <div style="display:flex; gap:0.4rem;">
-              <button class="btn btn-sm btn-secondary" onclick="openCalendarScheduleModal(${c.id})"><i class="fa-solid fa-clock"></i> Edit Shifts</button>
-              <button class="btn btn-sm" onclick="importHolidaysForCal(${c.id})"><i class="fa-solid fa-cloud-arrow-down"></i> Sync Holidays</button>
+            <div style="display:flex; gap:0.35rem; flex-wrap:wrap; justify-content:flex-end;">
+              <button class="btn btn-sm btn-secondary" onclick="openCalendarScheduleModal(${c.id})"><i class="fa-solid fa-clock"></i> Shifts</button>
+              <button class="btn btn-sm btn-secondary" onclick="importHolidaysForCal(${c.id})"><i class="fa-solid fa-cloud-arrow-down"></i> Sync</button>
+              ${c.is_active 
+                ? `<button class="btn btn-sm btn-secondary" title="Hide calendar from project list" onclick="toggleCalendarActive(${c.id})"><i class="fa-solid fa-eye-slash"></i> Hide</button>`
+                : `<button class="btn btn-sm" style="background:#107c41;" title="Unhide calendar" onclick="toggleCalendarActive(${c.id})"><i class="fa-solid fa-eye"></i> Unhide</button>`
+              }
             </div>
           </div>
 
@@ -786,11 +881,118 @@
 
           <h4 style="margin-top:1rem; font-size:0.85rem; color:#323130;"><i class="fa-solid fa-calendar-check"></i> Holidays & Non-Working Days (${c.exceptions.length}):</h4>
           <div style="max-height: 140px; overflow-y:auto; margin-top:0.35rem; font-size:0.8rem; border:1px solid #edebe9; border-radius:4px; padding:0.5rem; background:white;">
-            ${c.exceptions.map(e => `<div>📅 <strong>${e.from_date}</strong>: ${e.name}</div>`).join("")}
+            ${c.exceptions.map(e => `<div>📅 <strong>${e.from_date}</strong>: ${escapeHtml(e.name)}</div>`).join("")}
           </div>
         `;
         container.appendChild(card);
       });
+    }
+
+    function openNewCalendarModal() {
+      document.getElementById("new-cal-name").value = "";
+      document.getElementById("new-cal-country").value = "LT";
+      document.getElementById("new-cal-preset").value = "mon_fri_8h";
+      document.getElementById("new-calendar-modal").style.display = "flex";
+    }
+
+    function closeNewCalendarModal() {
+      document.getElementById("new-calendar-modal").style.display = "none";
+    }
+
+    async function submitCreateCalendar() {
+      const name = document.getElementById("new-cal-name").value.trim();
+      if (!name) {
+        alert("Please enter a calendar name");
+        return;
+      }
+      const countryCode = document.getElementById("new-cal-country").value.trim().toUpperCase() || "LT";
+      const preset = document.getElementById("new-cal-preset").value;
+
+      let weekdays = [];
+      if (preset === "mon_sun_4h") {
+        for (let d = 1; d <= 7; d++) {
+          weekdays.push({ day_type: d, day_working: true, working_times: [{ from_time: "13:00:00", to_time: "17:00:00" }] });
+        }
+      } else {
+        for (let d = 1; d <= 7; d++) {
+          const isWk = d !== 1 && d !== 7;
+          const shifts = isWk ? [
+            { from_time: "08:00:00", to_time: "12:00:00" },
+            { from_time: "13:00:00", to_time: "17:00:00" }
+          ] : [];
+          weekdays.push({ day_type: d, day_working: isWk, working_times: shifts });
+        }
+      }
+
+      try {
+        const resp = await fetch("/api/calendars", {
+          method: "POST",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ name: name, country_code: countryCode, is_active: true, weekdays: weekdays })
+        });
+        if (!resp.ok) {
+          const err = await resp.json();
+          alert("Error: " + (err.detail || "Failed to create calendar"));
+          return;
+        }
+        closeNewCalendarModal();
+        alert("Calendar created successfully!");
+        loadCalendars();
+      } catch (e) {
+        console.error("Create calendar error:", e);
+      }
+    }
+
+    function openEditCalendarNameModal(calId, currentName) {
+      document.getElementById("edit-cal-name-id").value = calId;
+      document.getElementById("edit-cal-name-input").value = currentName;
+      document.getElementById("edit-calendar-name-modal").style.display = "flex";
+    }
+
+    function closeEditCalendarNameModal() {
+      document.getElementById("edit-calendar-name-modal").style.display = "none";
+    }
+
+    async function submitEditCalendarName() {
+      const calId = document.getElementById("edit-cal-name-id").value;
+      const newName = document.getElementById("edit-cal-name-input").value.trim();
+      if (!newName) {
+        alert("Calendar name cannot be empty");
+        return;
+      }
+      try {
+        const resp = await fetch(`/api/calendars/${calId}`, {
+          method: "PUT",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ name: newName })
+        });
+        if (!resp.ok) {
+          const err = await resp.json();
+          alert("Error: " + (err.detail || "Failed to rename calendar"));
+          return;
+        }
+        closeEditCalendarNameModal();
+        loadCalendars();
+      } catch (e) {
+        console.error("Edit calendar name error:", e);
+      }
+    }
+
+    async function toggleCalendarActive(calId) {
+      try {
+        const resp = await fetch(`/api/calendars/${calId}/hide`, {
+          method: "PUT",
+          headers: getAuthHeaders()
+        });
+        if (!resp.ok) {
+          const err = await resp.json();
+          alert("Error: " + (err.detail || "Failed to change calendar status"));
+          return;
+        }
+        loadCalendars();
+      } catch (e) {
+        console.error("Toggle calendar active error:", e);
+      }
     }
 
     function openCalendarScheduleModal(calId) {
