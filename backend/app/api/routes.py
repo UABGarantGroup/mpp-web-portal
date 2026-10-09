@@ -616,7 +616,10 @@ from backend.app.models.schemas import (
     StageStatusUpdate,
     ProjectSnapshotCreate,
     StageStatusEnum,
+    ResourceSwapItem,
+    ProjectRefreshRequest,
 )
+from backend.app.services.mpxj_parser import parse_project_file
 
 
 @router.get("/api/projects", tags=["Projects"])
@@ -1056,4 +1059,109 @@ def get_portfolio_view(db: Session = Depends(get_db)):
         "stage_columns": stage_columns,
         "groups": portfolio_groups,
     }
+
+
+# --- Project Schedule Upload & Refresh Endpoints (Phase 4) ---
+
+@router.post("/api/projects/{project_id}/upload-schedule", tags=["Projects"])
+async def upload_project_schedule(
+    project_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["PM", "Admin"])),
+):
+    proj = db.query(ProjectDB).filter(ProjectDB.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    try:
+        parsed = parse_project_file(content, file.filename)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse project file: {str(e)}")
+
+    # Update latest project snapshot or create new one
+    snapshot = ProjectSnapshotDB(
+        project_id=proj.id,
+        percent_complete=parsed["percent_complete"],
+        percent_work_complete=parsed["percent_work_complete"],
+        start_date=parsed["start_date"] or proj.start_date,
+        finish_date=parsed["finish_date"],
+        baseline_finish=parsed["baseline_finish"],
+        actual_cost=parsed["actual_cost"],
+        cost=parsed["cost"],
+        baseline_cost=parsed["baseline_cost"],
+        baseline_budget=parsed["baseline_budget"],
+        budget_cost=proj.budget_cost,
+        source="UPLOAD",
+    )
+    db.add(snapshot)
+
+    # Detect generic resources in the uploaded file for the replacement wizard
+    file_resources = parsed.get("resources", [])
+    generic_found = [r for r in file_resources if r.get("is_generic")]
+
+    audit = AuditLogDB(
+        entity_type="PROJECT_SCHEDULE",
+        entity_id=str(proj.id),
+        action="UPLOAD",
+        changed_by=user.email,
+        details=f"Schedule file '{file.filename}' uploaded. % Complete: {parsed['percent_complete']}%, Cost: €{parsed['cost']}",
+    )
+    db.add(audit)
+    db.commit()
+
+    return {
+        "message": f"Schedule parsed and portfolio snapshot updated from '{file.filename}'",
+        "project_id": proj.id,
+        "project_name": proj.name,
+        "erp_number": proj.erp_number,
+        "metrics": {
+            "percent_complete": parsed["percent_complete"],
+            "percent_work_complete": parsed["percent_work_complete"],
+            "start_date": parsed["start_date"],
+            "finish_date": parsed["finish_date"],
+            "baseline_finish": parsed["baseline_finish"],
+            "actual_cost": parsed["actual_cost"],
+            "cost": parsed["cost"],
+            "baseline_cost": parsed["baseline_cost"],
+            "baseline_budget": parsed["baseline_budget"],
+            "budget_cost": proj.budget_cost,
+        },
+        "file_resources": file_resources,
+        "generic_resources_to_replace": generic_found,
+    }
+
+
+@router.post("/api/projects/{project_id}/refresh", tags=["Projects"])
+def refresh_project_template(
+    project_id: int,
+    refresh_req: ProjectRefreshRequest,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["PM", "Admin"])),
+):
+    proj = db.query(ProjectDB).filter(ProjectDB.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # If generic -> named replacements requested, update project team members
+    for swap in refresh_req.resource_swaps:
+        named_res = db.query(ResourceDB).filter(ResourceDB.id == swap.named_resource_id).first()
+        if named_res:
+            # Ensure named resource is in project team
+            existing_team = db.query(ProjectTeamResourceDB).filter(
+                ProjectTeamResourceDB.project_id == proj.id,
+                ProjectTeamResourceDB.resource_id == named_res.id,
+            ).first()
+            if not existing_team:
+                db.add(ProjectTeamResourceDB(project_id=proj.id, resource_id=named_res.id))
+
+    db.commit()
+
+    # Generate refreshed template with updated rates, calendars, and resources
+    return export_project_template_by_id(project_id=project_id, db=db)
+
 

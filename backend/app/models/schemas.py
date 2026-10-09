@@ -156,3 +156,13 @@ class ProjectSnapshotCreate(BaseModel):
     budget_cost: float = 0.0
     source: str = "MANUAL"
 
+
+class ResourceSwapItem(BaseModel):
+    generic_resource_name: str
+    named_resource_id: int
+
+
+class ProjectRefreshRequest(BaseModel):
+    resource_swaps: List[ResourceSwapItem] = Field(default_factory=list)
+
+

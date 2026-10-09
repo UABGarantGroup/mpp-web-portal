@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     AZURE_AD_CLIENT_SECRET: str = ""
     AUTH_ENABLED: bool = False  # Enabled in production; allows development bypass
 
+    # JVM & MPXJ (for .mpp reading)
+    JVM_PATH: str = r"C:\Program Files\Android\Android Studio\jbr\bin\server\jvm.dll"
+
     # Security & CORS
     CORS_ORIGINS: List[str] = ["*"]
     SECRET_KEY: str = "mpp-hub-super-secret-key-change-in-production-2026"
