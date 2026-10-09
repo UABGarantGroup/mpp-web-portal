@@ -166,3 +166,82 @@ class ProjectRefreshRequest(BaseModel):
     resource_swaps: List[ResourceSwapItem] = Field(default_factory=list)
 
 
+# --- Entra ID & Portal User Schemas ---
+
+class EntraUserSchema(BaseModel):
+    id: str
+    display_name: str
+    email: str
+    upn: Optional[str] = None
+    job_title: Optional[str] = None
+    department: Optional[str] = None
+
+
+class EntraGroupSchema(BaseModel):
+    id: str
+    display_name: str
+    mail: Optional[str] = None
+    description: Optional[str] = None
+    security_enabled: bool = True
+    members_count: int = 0
+
+
+class PortalUserModel(BaseModel):
+    id: int
+    email: str
+    display_name: str
+    entra_oid: Optional[str] = None
+    role: str
+    is_active: bool
+    source: str
+    group_name: Optional[str] = None
+    created_at: datetime
+
+
+class PortalUserCreate(BaseModel):
+    email: str
+    display_name: Optional[str] = None
+    role: str = "PM"  # Admin, PM, FinanceManager, ResourceManager, Viewer
+    add_as_resource: bool = False
+    department: Optional[str] = None
+    base_calendar_id: int = 1
+    standard_rate: float = 0.0
+
+
+class PortalUserUpdate(BaseModel):
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class ResourceAddByEmailRequest(BaseModel):
+    email: str
+    display_name: Optional[str] = None
+    department: Optional[str] = None
+    base_calendar_id: int = 1
+    standard_rate: float = 0.0
+    overtime_rate: float = 0.0
+
+
+class GroupImportRequest(BaseModel):
+    group_id: str
+    group_name: Optional[str] = None
+    target: str = "BOTH"  # "USERS", "RESOURCES", "BOTH"
+    user_role: str = "PM"
+    selected_emails: Optional[List[str]] = None  # None = import all members
+    default_calendar_id: int = 1
+    default_rate: float = 0.0
+
+
+class GroupImportResult(BaseModel):
+    group_id: str
+    group_name: str
+    target: str
+    total_members: int
+    users_added: int
+    users_skipped: int
+    resources_added: int
+    resources_skipped: int
+    details: List[str] = Field(default_factory=list)
+
+
+

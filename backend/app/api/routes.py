@@ -17,6 +17,7 @@ from backend.app.db.models import (
     CalendarWeekdayDB,
     CalendarWorkingShiftDB,
     CustomFieldDB,
+    PortalUserDB,
     RatePeriodDB,
     ResourceDB,
     ResourceFieldValueDB,
@@ -37,17 +38,27 @@ from backend.app.models.schemas import (
     CalendarWeekdaysUpdate,
     CostRateItem,
     CustomFieldDefinition,
+    EntraGroupSchema,
+    EntraUserSchema,
+    GroupImportRequest,
+    GroupImportResult,
+    PortalUserCreate,
+    PortalUserModel,
+    PortalUserUpdate,
     ProjectTemplateRequest,
+    ResourceAddByEmailRequest,
     ResourceModel,
     WeekDayModel,
     WorkingShiftModel,
 )
+from backend.app.services.entra_graph import entra_graph_service
 from backend.app.services.field_ids import get_field_id
 from backend.app.services.holiday_service import fetch_country_holidays, get_supported_countries
 from backend.app.services.import_service import validate_and_import_rates, validate_and_import_resources
 from backend.app.services.xml_generator import build_ms_project_xml
 
 router = APIRouter()
+
 
 
 # --- System Endpoints ---
@@ -1195,5 +1206,426 @@ def refresh_project_template(
 
     # Generate refreshed template with updated rates, calendars, and resources
     return export_project_template_by_id(project_id=project_id, db=db)
+
+
+# --- Entra ID (Azure AD) Selective Directory Integration ---
+
+@router.get("/api/entra/users", response_model=List[EntraUserSchema], tags=["Entra ID"])
+def search_entra_users(
+    q: str = Query("", description="Search term for display name, email, or UPN"),
+    limit: int = Query(15, ge=1, le=50),
+    user: CurrentUser = Depends(require_roles(["Admin", "ResourceManager"])),
+):
+    """
+    Searches Microsoft Entra ID directory users.
+    Enables selective user lookups rather than dumping all tenant users into the project pool.
+    """
+    return entra_graph_service.search_users(query=q, limit=limit)
+
+
+@router.get("/api/entra/user", response_model=Optional[EntraUserSchema], tags=["Entra ID"])
+def get_entra_user(
+    email: str = Query(..., description="User email or UPN to look up"),
+    user: CurrentUser = Depends(require_roles(["Admin", "ResourceManager"])),
+):
+    """
+    Looks up a single Entra ID directory user by email or UPN.
+    """
+    user_info = entra_graph_service.get_user_by_email(email)
+    if not user_info:
+        raise HTTPException(status_code=404, detail=f"User with email '{email}' not found in Entra ID")
+    return user_info
+
+
+@router.get("/api/entra/groups", response_model=List[EntraGroupSchema], tags=["Entra ID"])
+def search_entra_groups(
+    q: str = Query("", description="Search term for security group name"),
+    limit: int = Query(20, ge=1, le=50),
+    user: CurrentUser = Depends(require_roles(["Admin", "ResourceManager"])),
+):
+    """
+    Searches Microsoft Entra ID security groups.
+    """
+    return entra_graph_service.search_security_groups(query=q, limit=limit)
+
+
+@router.get("/api/entra/groups/{group_id}/members", response_model=List[EntraUserSchema], tags=["Entra ID"])
+def get_entra_group_members(
+    group_id: str,
+    user: CurrentUser = Depends(require_roles(["Admin", "ResourceManager"])),
+):
+    """
+    Lists user members belonging to an Entra ID security group.
+    """
+    return entra_graph_service.get_group_members(group_id=group_id)
+
+
+# --- Portal User Access Management ---
+
+@router.get("/api/users", response_model=List[PortalUserModel], tags=["Portal Users"])
+def list_portal_users(
+    role: Optional[str] = Query(None),
+    include_inactive: bool = Query(True),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin"])),
+):
+    """
+    Lists authorized portal users and their role assignments.
+    """
+    query = db.query(PortalUserDB)
+    if not include_inactive:
+        query = query.filter(PortalUserDB.is_active == True)
+    if role:
+        query = query.filter(PortalUserDB.role == role)
+    return query.order_by(PortalUserDB.display_name.asc()).all()
+
+
+@router.post("/api/users/add-by-email", response_model=PortalUserModel, status_code=status.HTTP_201_CREATED, tags=["Portal Users"])
+def add_portal_user_by_email(
+    req: PortalUserCreate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin"])),
+):
+    """
+    Grants portal access to a specific Entra ID user by email.
+    Optionally also registers them in the Master Resource Pool.
+    """
+    # Look up user info from Entra ID if display name not provided
+    entra_info = entra_graph_service.get_user_by_email(req.email)
+    display_name = req.display_name or (entra_info["display_name"] if entra_info else req.email.split("@")[0].title())
+    entra_oid = entra_info["id"] if entra_info else None
+    dept = req.department or (entra_info.get("department") if entra_info else "Project Management")
+
+    # Check if user already in PortalUserDB
+    existing_user = db.query(PortalUserDB).filter(PortalUserDB.email.ilike(req.email.strip())).first()
+    if existing_user:
+        if not existing_user.is_active:
+            # Reactivate
+            existing_user.is_active = True
+            existing_user.role = req.role
+            existing_user.display_name = display_name
+            db.commit()
+            db.refresh(existing_user)
+            return existing_user
+        raise HTTPException(status_code=400, detail=f"User '{req.email}' already has portal access (Role: {existing_user.role})")
+
+    new_user = PortalUserDB(
+        email=req.email.strip().lower(),
+        display_name=display_name,
+        entra_oid=entra_oid,
+        role=req.role,
+        is_active=True,
+        source="EMAIL",
+    )
+    db.add(new_user)
+
+    # Optionally add as Resource into Master Resource Pool
+    if req.add_as_resource:
+        existing_res = db.query(ResourceDB).filter(
+            (ResourceDB.email.ilike(req.email.strip())) | (ResourceDB.ad_upn.ilike(req.email.strip()))
+        ).first()
+        if not existing_res:
+            res_db = ResourceDB(
+                name=display_name,
+                email=req.email.strip().lower(),
+                ad_upn=req.email.strip().lower(),
+                department=dept,
+                resource_type=ResourceTypeEnum.WORK,
+                resource_kind=ResourceKindEnum.NAMED,
+                is_generic=False,
+                is_active=True,
+                base_calendar_id=req.base_calendar_id,
+            )
+            db.add(res_db)
+            db.flush()
+
+            # Add default rate table A
+            rate_db = RatePeriodDB(
+                resource_id=res_db.id,
+                rate_table=RateTableEnum.A,
+                standard_rate=req.standard_rate,
+                overtime_rate=0.0,
+                cost_per_use=0.0,
+                effective_date=date.today(),
+                created_by=user.email,
+            )
+            db.add(rate_db)
+
+    # Audit log
+    audit = AuditLogDB(
+        entity_type="PORTAL_USER",
+        entity_id=req.email,
+        action="CREATE",
+        changed_by=user.email,
+        details=f"Granted portal access to '{display_name}' ({req.email}) with role '{req.role}'",
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
+
+
+@router.post("/api/users/import-group", response_model=GroupImportResult, tags=["Portal Users"])
+def import_portal_users_from_group(
+    req: GroupImportRequest,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin"])),
+):
+    """
+    Imports selected members of an Entra ID security group as portal users and/or project resources.
+    """
+    members = entra_graph_service.get_group_members(group_id=req.group_id)
+    if not members:
+        # Check if group exists
+        groups = entra_graph_service.search_security_groups()
+        matched = next((g for g in groups if g["id"] == req.group_id), None)
+        group_name = matched["display_name"] if matched else req.group_name or req.group_id
+    else:
+        group_name = req.group_name or "Entra ID Security Group"
+
+    users_added = 0
+    users_skipped = 0
+    resources_added = 0
+    resources_skipped = 0
+    details = []
+
+    # If selected_emails specified, filter members
+    target_members = [
+        m for m in members
+        if not req.selected_emails or m["email"].lower() in [e.lower() for e in req.selected_emails]
+    ]
+
+    for m in target_members:
+        email = m["email"].strip().lower()
+        dname = m["display_name"]
+        dept = m.get("department") or "Engineering & Operations"
+
+        # 1. Process Portal User
+        if req.target in ("USERS", "BOTH"):
+            existing_user = db.query(PortalUserDB).filter(PortalUserDB.email.ilike(email)).first()
+            if existing_user:
+                users_skipped += 1
+            else:
+                new_u = PortalUserDB(
+                    email=email,
+                    display_name=dname,
+                    entra_oid=m.get("id"),
+                    role=req.user_role,
+                    is_active=True,
+                    source="SECURITY_GROUP",
+                    group_name=group_name,
+                )
+                db.add(new_u)
+                users_added += 1
+                details.append(f"User access added: {dname} ({email}) as {req.user_role}")
+
+        # 2. Process Resource Pool
+        if req.target in ("RESOURCES", "BOTH"):
+            existing_res = db.query(ResourceDB).filter(
+                (ResourceDB.email.ilike(email)) | (ResourceDB.ad_upn.ilike(email))
+            ).first()
+            if existing_res:
+                resources_skipped += 1
+            else:
+                res_db = ResourceDB(
+                    name=dname,
+                    email=email,
+                    ad_upn=m.get("upn") or email,
+                    department=dept,
+                    resource_type=ResourceTypeEnum.WORK,
+                    resource_kind=ResourceKindEnum.NAMED,
+                    is_generic=False,
+                    is_active=True,
+                    base_calendar_id=req.default_calendar_id,
+                )
+                db.add(res_db)
+                db.flush()
+
+                rate_db = RatePeriodDB(
+                    resource_id=res_db.id,
+                    rate_table=RateTableEnum.A,
+                    standard_rate=req.default_rate,
+                    overtime_rate=0.0,
+                    cost_per_use=0.0,
+                    effective_date=date.today(),
+                    created_by=user.email,
+                )
+                db.add(rate_db)
+                resources_added += 1
+                details.append(f"Resource pool added: {dname} ({dept})")
+
+    # Audit log
+    audit = AuditLogDB(
+        entity_type="SECURITY_GROUP",
+        entity_id=req.group_id,
+        action="IMPORT",
+        changed_by=user.email,
+        details=f"Imported from '{group_name}': {users_added} users, {resources_added} resources",
+    )
+    db.add(audit)
+    db.commit()
+
+    return GroupImportResult(
+        group_id=req.group_id,
+        group_name=group_name,
+        target=req.target,
+        total_members=len(target_members),
+        users_added=users_added,
+        users_skipped=users_skipped,
+        resources_added=resources_added,
+        resources_skipped=resources_skipped,
+        details=details,
+    )
+
+
+@router.put("/api/users/{user_id}", response_model=PortalUserModel, tags=["Portal Users"])
+def update_portal_user(
+    user_id: int,
+    req: PortalUserUpdate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin"])),
+):
+    """
+    Updates role or activation status for a portal user.
+    """
+    p_user = db.query(PortalUserDB).filter(PortalUserDB.id == user_id).first()
+    if not p_user:
+        raise HTTPException(status_code=404, detail="Portal user not found")
+
+    if req.role is not None:
+        p_user.role = req.role
+    if req.is_active is not None:
+        p_user.is_active = req.is_active
+
+    db.commit()
+    db.refresh(p_user)
+    return p_user
+
+
+@router.delete("/api/users/{user_id}", tags=["Portal Users"])
+def delete_portal_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin"])),
+):
+    """
+    Deactivates portal access for a user.
+    """
+    p_user = db.query(PortalUserDB).filter(PortalUserDB.id == user_id).first()
+    if not p_user:
+        raise HTTPException(status_code=404, detail="Portal user not found")
+
+    if p_user.email.lower() == user.email.lower():
+        raise HTTPException(status_code=400, detail="Cannot deactivate your own administrator account")
+
+    p_user.is_active = False
+    db.commit()
+    return {"message": f"User access deactivated for '{p_user.email}'"}
+
+
+# --- Resource Management from Entra ID ---
+
+@router.post("/api/resources/add-by-email", response_model=ResourceModel, status_code=status.HTTP_201_CREATED, tags=["Resources"])
+def add_resource_from_entra_by_email(
+    req: ResourceAddByEmailRequest,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin", "ResourceManager"])),
+):
+    """
+    Selectively adds a single user from Entra ID into the Master Resource Pool.
+    Prevents adding all tenant users at once.
+    """
+    email_clean = req.email.strip().lower()
+    existing = db.query(ResourceDB).filter(
+        (ResourceDB.email.ilike(email_clean)) | (ResourceDB.ad_upn.ilike(email_clean))
+    ).first()
+    if existing:
+        if not existing.is_active:
+            existing.is_active = True
+            db.commit()
+            db.refresh(existing)
+            return existing
+        raise HTTPException(status_code=400, detail=f"Resource with email '{email_clean}' already exists in Resource Pool")
+
+    entra_info = entra_graph_service.get_user_by_email(email_clean)
+    display_name = req.display_name or (entra_info["display_name"] if entra_info else email_clean.split("@")[0].title())
+    dept = req.department or (entra_info.get("department") if entra_info else "Engineering & Operations")
+
+    new_res = ResourceDB(
+        name=display_name,
+        email=email_clean,
+        ad_upn=email_clean,
+        department=dept,
+        resource_type=ResourceTypeEnum.WORK,
+        resource_kind=ResourceKindEnum.NAMED,
+        is_generic=False,
+        is_active=True,
+        base_calendar_id=req.base_calendar_id,
+    )
+    db.add(new_res)
+    db.flush()
+
+    # Create default Rate Table A entry
+    rate_db = RatePeriodDB(
+        resource_id=new_res.id,
+        rate_table=RateTableEnum.A,
+        standard_rate=req.standard_rate,
+        overtime_rate=req.overtime_rate,
+        cost_per_use=0.0,
+        effective_date=date.today(),
+        created_by=user.email,
+    )
+    db.add(rate_db)
+
+    # Audit log
+    audit = AuditLogDB(
+        entity_type="RESOURCE",
+        entity_id=str(new_res.id),
+        action="CREATE",
+        changed_by=user.email,
+        details=f"Added Entra ID resource '{display_name}' ({email_clean}) to Master Pool with rate €{req.standard_rate:.2f}/h",
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(new_res)
+
+    rates = [
+        CostRateItem(
+            rate_table=RateTableEnum.A,
+            standard_rate=req.standard_rate,
+            overtime_rate=req.overtime_rate,
+            cost_per_use=0.0,
+            effective_date=date.today(),
+        )
+    ]
+    return ResourceModel(
+        id=new_res.id,
+        guid=new_res.guid,
+        ad_upn=new_res.ad_upn,
+        name=new_res.name,
+        email=new_res.email,
+        department=new_res.department,
+        resource_type=new_res.resource_type,
+        resource_kind=new_res.resource_kind,
+        is_generic=new_res.is_generic,
+        is_active=new_res.is_active,
+        base_calendar_id=new_res.base_calendar_id,
+        rates=rates,
+        custom_field_values={},
+    )
+
+
+@router.post("/api/resources/import-group", response_model=GroupImportResult, tags=["Resources"])
+def import_resources_from_entra_group(
+    req: GroupImportRequest,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin", "ResourceManager"])),
+):
+    """
+    Selectively imports members of an Entra ID security group into the Master Resource Pool.
+    """
+    req.target = "RESOURCES"
+    return import_portal_users_from_group(req=req, db=db, user=user)
+
 
 

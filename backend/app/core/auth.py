@@ -31,12 +31,29 @@ def get_current_user(
 ) -> CurrentUser:
     """
     Resolves the current authenticated user.
-    In development or when AUTH_ENABLED=False, supports header simulation.
-    In production with AUTH_ENABLED=True, decodes Entra ID JWT bearer token.
+    In development or when AUTH_ENABLED=False, supports header simulation and DB role resolution.
+    In production with AUTH_ENABLED=True, decodes Entra ID JWT bearer token and enforces
+    that the user has been explicitly authorized in PortalUserDB.
     """
+    from backend.app.db.session import SessionLocal
+    from backend.app.db.models import PortalUserDB
+
     if not settings.AUTH_ENABLED:
-        role = x_user_role or "Admin"
         email = x_user_email or "admin@enterprise.com"
+        # Check if user has an assigned role in PortalUserDB
+        assigned_role = x_user_role
+        if not assigned_role:
+            try:
+                db = SessionLocal()
+                try:
+                    p_user = db.query(PortalUserDB).filter(PortalUserDB.email.ilike(email)).first()
+                    if p_user:
+                        assigned_role = p_user.role
+                finally:
+                    db.close()
+            except Exception:
+                pass
+        role = assigned_role or "Admin"
         return CurrentUser(
             username=email.split("@")[0],
             email=email,
@@ -51,26 +68,55 @@ def get_current_user(
         )
 
     # In production: Decode token and extract claims
-    # Entra ID token decoding logic (MSAL/PyJWT with JWKS)
     token = authorization.credentials
     try:
         import jwt
-        # When Azure AD credentials configured, validate token signature against Microsoft JWKS
-        # For now, decode without verify if tenant not set, otherwise verify with JWKS
         unverified_claims = jwt.decode(token, options={"verify_signature": False})
-        roles = unverified_claims.get("roles", ["PM"])
-        email = unverified_claims.get("preferred_username") or unverified_claims.get("upn", "user@enterprise.com")
+        email = (
+            unverified_claims.get("preferred_username")
+            or unverified_claims.get("upn")
+            or unverified_claims.get("email", "user@enterprise.com")
+        )
+        token_roles = unverified_claims.get("roles", [])
+
+        # Verify selective portal authorization against PortalUserDB
+        db = SessionLocal()
+        try:
+            p_user = db.query(PortalUserDB).filter(PortalUserDB.email.ilike(email)).first()
+            if not p_user:
+                # If tenant token has Admin role, allow bootstrap access
+                if "Admin" in token_roles:
+                    return CurrentUser(username=email.split("@")[0], email=email, roles=["Admin"])
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "Access denied. Your Entra ID account has not been authorized for the MPP Hub. "
+                        "Please ask an Administrator to add your user account or security group."
+                    ),
+                )
+            if not p_user.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied. Your portal user account is inactive. Please contact an Administrator.",
+                )
+            roles = [p_user.role]
+        finally:
+            db.close()
+
         return CurrentUser(
             username=email.split("@")[0],
             email=email,
             roles=roles,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid authentication token: {str(e)}",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
 
 
 def require_roles(allowed_roles: List[str]):

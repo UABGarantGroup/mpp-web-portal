@@ -289,3 +289,24 @@ class AuditLogDB(Base):
     details = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
+
+class PortalUserDB(Base):
+    """
+    Authorized portal users and their role assignments.
+    Prevents blanket access for all Entra ID directory accounts.
+    Allows Admins to selectively grant access by user email or security group.
+    """
+    __tablename__ = "portal_users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    display_name = Column(String(255), nullable=False)
+    entra_oid = Column(String(64), nullable=True, index=True)
+    role = Column(String(50), default="PM", nullable=False)  # Admin, PM, FinanceManager, ResourceManager, Viewer
+    is_active = Column(Boolean, default=True, nullable=False)
+    source = Column(String(50), default="MANUAL", nullable=False)  # "EMAIL", "SECURITY_GROUP", "MANUAL"
+    group_name = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+

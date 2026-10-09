@@ -128,6 +128,7 @@
     <button class="tab-btn" onclick="switchTab('resources')"><i class="fa-solid fa-users"></i> Resource Pool & Rates</button>
     <button class="tab-btn" onclick="switchTab('calendars')"><i class="fa-solid fa-calendar-days"></i> Calendars & Holidays</button>
     <button class="tab-btn" onclick="switchTab('stages')"><i class="fa-solid fa-sliders"></i> Stage Columns Config</button>
+    <button class="tab-btn" onclick="switchTab('users')"><i class="fa-solid fa-user-shield"></i> Portal Users & Access</button>
   </nav>
 
   <!-- Main Content -->
@@ -228,10 +229,12 @@
     <!-- TAB 3: CENTRAL RESOURCE POOL & RATES -->
     <section id="tab-resources" style="display: none;">
       <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
           <h2><i class="fa-solid fa-users" style="color: var(--accent);"></i> Centralized Enterprise Resource Directory</h2>
-          <div style="display: flex; gap: 0.5rem;">
-            <button class="btn btn-secondary" onclick="openImportModal('resources')"><i class="fa-solid fa-file-import"></i> Import Resources (Excel/CSV)</button>
+          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <button class="btn" onclick="openAddResourceEntraModal()"><i class="fa-solid fa-user-plus"></i> Add Resource from Entra ID</button>
+            <button class="btn btn-secondary" onclick="openImportGroupModal('RESOURCES')"><i class="fa-solid fa-users-gear"></i> Import from Security Group</button>
+            <button class="btn btn-secondary" onclick="openImportModal('resources')"><i class="fa-solid fa-file-import"></i> Import (Excel/CSV)</button>
             <button class="btn btn-secondary" onclick="openImportModal('rates')"><i class="fa-solid fa-file-invoice-dollar"></i> Import Rates A–E</button>
           </div>
         </div>
@@ -313,6 +316,63 @@
               </tr>
             </thead>
             <tbody id="stages-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 6: PORTAL USERS & ACCESS MANAGEMENT (ENTRA ID) -->
+    <section id="tab-users" style="display: none;">
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.25rem;">
+          <div>
+            <h2 style="margin: 0;"><i class="fa-solid fa-user-shield" style="color: var(--accent);"></i> Portal User Access Management</h2>
+            <div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">
+              Selective Microsoft Entra ID authorization. Only users explicitly granted access or imported from security groups can use the MPP Hub.
+            </div>
+          </div>
+          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <button class="btn" onclick="openAddUserModal()"><i class="fa-solid fa-user-plus"></i> Add User by Email</button>
+            <button class="btn btn-secondary" onclick="openImportGroupModal('USERS')"><i class="fa-solid fa-users-gear"></i> Add Users by Security Group</button>
+          </div>
+        </div>
+
+        <div class="action-bar" style="margin-bottom: 1rem;">
+          <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+            <div class="search-box">
+              <i class="fa-solid fa-magnifying-glass" style="color: #605e5c;"></i>
+              <input type="text" id="users-search" placeholder="Search user name or email..." onkeyup="filterUsers()">
+            </div>
+            <select id="users-role-filter" onchange="filterUsers()" style="padding: 0.4rem 0.6rem; border: 1px solid #8a8886; border-radius: 4px; font-size: 0.85rem;">
+              <option value="">All Roles</option>
+              <option value="Admin">Admin</option>
+              <option value="PM">Project Manager (PM)</option>
+              <option value="FinanceManager">Finance Manager</option>
+              <option value="ResourceManager">Resource Manager</option>
+              <option value="Viewer">Viewer</option>
+            </select>
+            <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; cursor: pointer; background: #f3f2f1; padding: 0.35rem 0.6rem; border-radius: 4px; border: 1px solid #d2d0ce;">
+              <input type="checkbox" id="users-show-inactive" onchange="loadPortalUsers()"> Show Inactive Users
+            </label>
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="loadPortalUsers()"><i class="fa-solid fa-rotate"></i> Refresh List</button>
+        </div>
+
+        <div class="grid-container">
+          <table class="portfolio-table" id="users-table">
+            <thead>
+              <tr>
+                <th style="min-width: 220px;">Full Name</th>
+                <th style="min-width: 240px;">Email / Entra UPN</th>
+                <th style="width: 170px;">Assigned Portal Role</th>
+                <th style="width: 150px;">Source</th>
+                <th style="width: 90px;" class="text-center">Status</th>
+                <th style="width: 110px;" class="text-center">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="users-tbody">
+              <!-- Populated dynamically -->
+            </tbody>
           </table>
         </div>
       </div>
@@ -485,6 +545,208 @@
     </div>
   </div>
 
+  <!-- Modal 1: Add Portal User by Email / Search -->
+  <div id="add-user-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="max-width: 580px;">
+      <div class="modal-header">
+        <h3><i class="fa-solid fa-user-plus" style="color:var(--accent);"></i> Grant Portal Access (Entra ID)</h3>
+        <button style="border:none;background:none;font-size:1.2rem;cursor:pointer;" onclick="closeAddUserModal()">&times;</button>
+      </div>
+      <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+        Authorize a specific user from Microsoft Entra ID. You can assign their portal role and optionally register them in the Master Resource Pool.
+      </p>
+
+      <div class="form-group" style="margin-bottom: 1rem; position: relative;">
+        <label>User Email or Name in Entra ID *</label>
+        <div style="display: flex; gap: 0.5rem;">
+          <input type="text" id="add-user-search-input" placeholder="Type email or search directory..." oninput="debounceUserSearch('portal')" style="flex: 1; padding: 0.45rem;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="triggerManualEntraSearch('portal')"><i class="fa-solid fa-magnifying-glass"></i> Search</button>
+        </div>
+        <div id="add-user-suggestions" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d2d0ce; border-radius: 4px; max-height: 180px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 8px rgba(0,0,0,0.15);"></div>
+      </div>
+
+      <!-- Preview card of selected user -->
+      <div id="add-user-preview-card" style="display: none; background: #f3f9fd; border: 1px solid #c7e0f4; border-radius: 4px; padding: 0.75rem; margin-bottom: 1rem;">
+        <div style="display: flex; align-items: center; gap: 0.75rem;">
+          <div style="width: 38px; height: 38px; border-radius: 50%; background: var(--accent); color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.95rem;" id="add-user-avatar">?</div>
+          <div>
+            <div style="font-weight: 600; font-size: 0.95rem;" id="add-user-card-name">User Name</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted);" id="add-user-card-email">user@garantgroup.eu</div>
+            <div style="font-size: 0.75rem; color: #004578; margin-top: 0.2rem;" id="add-user-card-meta">Title • Department</div>
+          </div>
+        </div>
+      </div>
+
+      <input type="hidden" id="add-user-selected-email">
+      <input type="hidden" id="add-user-selected-name">
+      <input type="hidden" id="add-user-selected-dept">
+
+      <div class="form-group" style="margin-bottom: 1rem;">
+        <label>Portal Role *</label>
+        <select id="add-user-role-select" style="padding: 0.45rem;">
+          <option value="PM">Project Manager (PM) - Edit own projects, view resources</option>
+          <option value="Viewer">Viewer - Read-only view of projects and resources</option>
+          <option value="FinanceManager">Finance Manager - Manage budgets and Rate tables A–E</option>
+          <option value="ResourceManager">Resource Manager - Manage Master Resource Directory</option>
+          <option value="Admin">Admin - Full access to all modules, users & calendars</option>
+        </select>
+      </div>
+
+      <div style="border: 1px solid #edebe9; border-radius: 4px; padding: 0.75rem; background: #faf9f8; margin-bottom: 1.25rem;">
+        <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: 600; font-size: 0.85rem; cursor: pointer;">
+          <input type="checkbox" id="add-user-also-resource-chk" onchange="toggleAddUserResourceFields()"> Also add as Resource in Master Resource Pool
+        </label>
+        <div id="add-user-resource-extra-fields" style="display: none; margin-top: 0.75rem; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
+          <div class="form-group">
+            <label style="font-size: 0.8rem;">Base Calendar</label>
+            <select id="add-user-res-cal-select" style="padding: 0.35rem; font-size: 0.85rem;"></select>
+          </div>
+          <div class="form-group">
+            <label style="font-size: 0.8rem;">Standard Rate (€/h)</label>
+            <input type="number" id="add-user-res-rate-input" value="0.00" step="0.50" style="padding: 0.35rem; font-size: 0.85rem;">
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeAddUserModal()">Cancel</button>
+        <button class="btn" onclick="submitAddUserByEmail()"><i class="fa-solid fa-check"></i> Grant Access</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 2: Add Resource from Entra ID by Email -->
+  <div id="add-resource-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="max-width: 580px;">
+      <div class="modal-header">
+        <h3><i class="fa-solid fa-user-plus" style="color:var(--primary);"></i> Add Resource from Entra ID</h3>
+        <button style="border:none;background:none;font-size:1.2rem;cursor:pointer;" onclick="closeAddResourceModal()">&times;</button>
+      </div>
+      <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+        Selectively add a team member from Entra ID to the Master Resource Pool for MS Project schedules.
+      </p>
+
+      <div class="form-group" style="margin-bottom: 1rem; position: relative;">
+        <label>User Email or Name in Entra ID *</label>
+        <div style="display: flex; gap: 0.5rem;">
+          <input type="text" id="add-res-search-input" placeholder="Type email or search directory..." oninput="debounceUserSearch('resource')" style="flex: 1; padding: 0.45rem;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="triggerManualEntraSearch('resource')"><i class="fa-solid fa-magnifying-glass"></i> Search</button>
+        </div>
+        <div id="add-res-suggestions" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d2d0ce; border-radius: 4px; max-height: 180px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 8px rgba(0,0,0,0.15);"></div>
+      </div>
+
+      <!-- Preview card -->
+      <div id="add-res-preview-card" style="display: none; background: #eef6ec; border: 1px solid #b7e1cd; border-radius: 4px; padding: 0.75rem; margin-bottom: 1rem;">
+        <div style="display: flex; align-items: center; gap: 0.75rem;">
+          <div style="width: 38px; height: 38px; border-radius: 50%; background: var(--primary); color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.95rem;" id="add-res-avatar">?</div>
+          <div>
+            <div style="font-weight: 600; font-size: 0.95rem;" id="add-res-card-name">Resource Name</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted);" id="add-res-card-email">user@garantgroup.eu</div>
+            <div style="font-size: 0.75rem; color: var(--primary-dark); margin-top: 0.2rem;" id="add-res-card-meta">Title • Department</div>
+          </div>
+        </div>
+      </div>
+
+      <input type="hidden" id="add-res-selected-email">
+      <input type="hidden" id="add-res-selected-name">
+
+      <div class="form-grid" style="margin-bottom: 1rem;">
+        <div class="form-group">
+          <label>Department *</label>
+          <input type="text" id="add-res-dept-input" placeholder="e.g. Engineering, Ship Repair" style="padding: 0.45rem;">
+        </div>
+        <div class="form-group">
+          <label>Base Calendar *</label>
+          <select id="add-res-cal-select" style="padding: 0.45rem;"></select>
+        </div>
+      </div>
+
+      <div class="form-grid" style="margin-bottom: 1.25rem;">
+        <div class="form-group">
+          <label>Table A Standard Rate (€/h)</label>
+          <input type="number" id="add-res-std-rate" value="0.00" step="0.50" style="padding: 0.45rem;">
+        </div>
+        <div class="form-group">
+          <label>Overtime Rate (€/h)</label>
+          <input type="number" id="add-res-ot-rate" value="0.00" step="0.50" style="padding: 0.45rem;">
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeAddResourceModal()">Cancel</button>
+        <button class="btn" onclick="submitAddResourceByEmail()"><i class="fa-solid fa-plus"></i> Add to Resource Pool</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 3: Import from Entra ID Security Group -->
+  <div id="import-group-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="max-width: 680px;">
+      <div class="modal-header">
+        <h3><i class="fa-solid fa-users-gear" style="color:var(--accent);"></i> Import from Entra ID Security Group</h3>
+        <button style="border:none;background:none;font-size:1.2rem;cursor:pointer;" onclick="closeImportGroupModal()">&times;</button>
+      </div>
+      <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+        Bulk-import members of a chosen security group as Portal Users and/or MS Project Master Resources.
+      </p>
+
+      <div class="form-grid" style="margin-bottom: 1rem;">
+        <div class="form-group">
+          <label>Select Entra ID Security Group *</label>
+          <select id="import-group-select" onchange="onSecurityGroupSelected()" style="padding: 0.45rem; font-size: 0.9rem;">
+            <option value="">-- Choose Security Group --</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Import Target *</label>
+          <select id="import-group-target-select" onchange="onImportTargetChanged()" style="padding: 0.45rem; font-size: 0.9rem;">
+            <option value="BOTH">Both (Portal Users & Project Resources)</option>
+            <option value="USERS">Portal Users Only</option>
+            <option value="RESOURCES">Project Resources Only</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Context options based on target -->
+      <div id="import-group-options-box" style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 1rem; padding: 0.75rem; background: #faf9f8; border: 1px solid #edebe9; border-radius: 4px;">
+        <div class="form-group" id="import-group-role-group">
+          <label style="font-size: 0.8rem;">Portal Role to Assign</label>
+          <select id="import-group-role-select" style="padding: 0.35rem; font-size: 0.85rem;">
+            <option value="PM">Project Manager (PM)</option>
+            <option value="Viewer">Viewer</option>
+            <option value="ResourceManager">Resource Manager</option>
+            <option value="FinanceManager">Finance Manager</option>
+            <option value="Admin">Admin</option>
+          </select>
+        </div>
+        <div class="form-group" id="import-group-cal-group">
+          <label style="font-size: 0.8rem;">Default Base Calendar</label>
+          <select id="import-group-cal-select" style="padding: 0.35rem; font-size: 0.85rem;"></select>
+        </div>
+      </div>
+
+      <!-- Members checklist -->
+      <div style="margin-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
+          <label style="font-weight: 600; font-size: 0.85rem;">
+            Group Members (<span id="import-group-members-count">0</span>):
+          </label>
+          <label style="font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; gap: 0.35rem;">
+            <input type="checkbox" id="import-group-check-all" checked onchange="toggleAllGroupMembers()"> Select / Deselect All
+          </label>
+        </div>
+        <div id="import-group-members-list" style="max-height: 220px; overflow-y: auto; border: 1px solid #d2d0ce; border-radius: 4px; padding: 0.5rem; background: white; font-size: 0.85rem;">
+          <div style="color: var(--text-muted); text-align: center; padding: 1.5rem;">Select a security group above to view its members.</div>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeImportGroupModal()">Cancel</button>
+        <button class="btn" id="import-group-confirm-btn" onclick="submitImportGroup()" disabled><i class="fa-solid fa-file-import"></i> Import Selected Members</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     // State
     let currentRole = "Admin";
@@ -492,6 +754,10 @@
     let stageColumns = [];
     let allResources = [];
     let allCalendars = [];
+    let allPortalUsers = [];
+    let entraGroupsList = [];
+    let currentGroupMembers = [];
+    let searchDebounceTimer = null;
 
     document.getElementById("proj-start-date").value = new Date().toISOString().split("T")[0];
 
@@ -523,6 +789,7 @@
       if (tabId === "resources") loadResources();
       if (tabId === "calendars") loadCalendars();
       if (tabId === "stages") loadStages();
+      if (tabId === "users") loadPortalUsers();
     }
 
     // --- PORTFOLIO CENTER ---
@@ -1526,6 +1793,560 @@
       alert(`Import committed! ${data.valid_count} records saved.`);
       closeImportModal();
       loadResources();
+    }
+
+    // --- PORTAL USERS & ENTRA ID ACCESS MANAGEMENT ---
+
+    async function loadPortalUsers() {
+      try {
+        const showInactive = document.getElementById("users-show-inactive")?.checked ?? true;
+        const resp = await fetch(`/api/users?include_inactive=${showInactive}`, { headers: getAuthHeaders() });
+        if (!resp.ok) {
+          console.warn("Could not load users:", resp.status);
+          return;
+        }
+        allPortalUsers = await resp.json();
+        renderPortalUsers(allPortalUsers);
+      } catch (err) {
+        console.error("Failed to load portal users:", err);
+      }
+    }
+
+    function renderPortalUsers(users) {
+      const tbody = document.getElementById("users-tbody");
+      if (!tbody) return;
+      tbody.innerHTML = "";
+
+      if (!users || users.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" class="text-center" style="padding:2rem; color:var(--text-muted);">No portal users found. Click 'Add User by Email' to grant access.</td></tr>`;
+        return;
+      }
+
+      users.forEach(u => {
+        const tr = document.createElement("tr");
+        const statusBadge = u.is_active
+          ? `<span class="badge" style="background:#dff6dd; color:#107c41;"><i class="fa-solid fa-check"></i> Active</span>`
+          : `<span class="badge" style="background:#fde7e9; color:#a80000;"><i class="fa-solid fa-ban"></i> Inactive</span>`;
+
+        const sourceBadge = u.source === "SECURITY_GROUP"
+          ? `<span class="badge" style="background:#eff6fc; color:#0078d4;" title="${u.group_name || 'Security Group'}"><i class="fa-solid fa-users"></i> ${u.group_name || 'Group'}</span>`
+          : `<span class="badge" style="background:#f3f2f1; color:#323130;"><i class="fa-solid fa-envelope"></i> Email</span>`;
+
+        tr.innerHTML = `
+          <td><strong>${escapeHtml(u.display_name)}</strong></td>
+          <td><span style="font-family:monospace; font-size:0.85rem;">${escapeHtml(u.email)}</span></td>
+          <td>
+            <select style="padding:0.25rem 0.4rem; font-size:0.85rem; border:1px solid #d2d0ce; border-radius:3px;" onchange="changePortalUserRole(${u.id}, this.value)">
+              <option value="Admin" ${u.role === "Admin" ? "selected" : ""}>Admin</option>
+              <option value="PM" ${u.role === "PM" ? "selected" : ""}>Project Manager (PM)</option>
+              <option value="FinanceManager" ${u.role === "FinanceManager" ? "selected" : ""}>Finance Manager</option>
+              <option value="ResourceManager" ${u.role === "ResourceManager" ? "selected" : ""}>Resource Manager</option>
+              <option value="Viewer" ${u.role === "Viewer" ? "selected" : ""}>Viewer</option>
+            </select>
+          </td>
+          <td>${sourceBadge}</td>
+          <td class="text-center">${statusBadge}</td>
+          <td class="text-center">
+            <button class="btn btn-secondary btn-sm" title="${u.is_active ? 'Deactivate user' : 'Reactivate user'}" onclick="togglePortalUserActive(${u.id}, ${u.is_active})" style="padding:0.2rem 0.45rem;">
+              <i class="fa-solid ${u.is_active ? 'fa-toggle-on' : 'fa-toggle-off'}" style="color:${u.is_active ? 'var(--primary)' : '#a80000'}; font-size:1rem;"></i>
+            </button>
+            <button class="btn btn-secondary btn-sm" title="Delete user" onclick="deletePortalUser(${u.id})" style="padding:0.2rem 0.45rem; color:#a80000; margin-left:0.25rem;">
+              <i class="fa-solid fa-trash"></i>
+            </button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function filterUsers() {
+      const q = document.getElementById("users-search")?.value.toLowerCase().trim() || "";
+      const roleFilter = document.getElementById("users-role-filter")?.value || "";
+
+      const filtered = allPortalUsers.filter(u => {
+        const matchesQ = !q || u.display_name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
+        const matchesRole = !roleFilter || u.role === roleFilter;
+        return matchesQ && matchesRole;
+      });
+      renderPortalUsers(filtered);
+    }
+
+    async function changePortalUserRole(userId, newRole) {
+      try {
+        const resp = await fetch(`/api/users/${userId}`, {
+          method: "PUT",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ role: newRole })
+        });
+        if (resp.ok) {
+          loadPortalUsers();
+        } else {
+          const err = await resp.json();
+          alert("Error updating role: " + (err.detail || "Unknown error"));
+        }
+      } catch (err) {
+        alert("Failed to update user role");
+      }
+    }
+
+    async function togglePortalUserActive(userId, currentActive) {
+      try {
+        const resp = await fetch(`/api/users/${userId}`, {
+          method: "PUT",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ is_active: !currentActive })
+        });
+        if (resp.ok) {
+          loadPortalUsers();
+        } else {
+          const err = await resp.json();
+          alert("Error updating user status: " + (err.detail || "Unknown error"));
+        }
+      } catch (err) {
+        alert("Failed to toggle user status");
+      }
+    }
+
+    async function deletePortalUser(userId) {
+      if (!confirm("Are you sure you want to deactivate portal access for this user?")) return;
+      try {
+        const resp = await fetch(`/api/users/${userId}`, {
+          method: "DELETE",
+          headers: getAuthHeaders()
+        });
+        if (resp.ok) {
+          loadPortalUsers();
+        } else {
+          const err = await resp.json();
+          alert("Error: " + (err.detail || "Could not delete user"));
+        }
+      } catch (err) {
+        alert("Failed to delete user");
+      }
+    }
+
+    // --- ENTRA ID USER SEARCH DEBOUNCE ---
+
+    function debounceUserSearch(context) {
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(() => {
+        executeEntraUserSearch(context);
+      }, 300);
+    }
+
+    function triggerManualEntraSearch(context) {
+      executeEntraUserSearch(context);
+    }
+
+    async function executeEntraUserSearch(context) {
+      const inputId = context === "portal" ? "add-user-search-input" : "add-res-search-input";
+      const suggestionsId = context === "portal" ? "add-user-suggestions" : "add-res-suggestions";
+      const q = document.getElementById(inputId)?.value.trim() || "";
+
+      const suggestionsBox = document.getElementById(suggestionsId);
+      if (!suggestionsBox) return;
+
+      if (!q || q.length < 2) {
+        suggestionsBox.style.display = "none";
+        return;
+      }
+
+      try {
+        const resp = await fetch(`/api/entra/users?q=${encodeURIComponent(q)}`, { headers: getAuthHeaders() });
+        if (!resp.ok) return;
+        const users = await resp.json();
+
+        if (!users || users.length === 0) {
+          suggestionsBox.innerHTML = `<div style="padding:0.6rem; color:var(--text-muted); font-size:0.85rem;">No Entra ID users found matching "${escapeHtml(q)}". You can still enter custom email.</div>`;
+          suggestionsBox.style.display = "block";
+          return;
+        }
+
+        suggestionsBox.innerHTML = users.map(u => `
+          <div style="padding:0.5rem 0.75rem; cursor:pointer; border-bottom:1px solid #edebe9; display:flex; justify-content:space-between; align-items:center;"
+               onmouseover="this.style.background='#f3f2f1'" onmouseout="this.style.background='white'"
+               onclick="selectEntraUserCandidate('${context}', '${escapeHtml(u.email)}', '${escapeHtml(u.display_name)}', '${escapeHtml(u.job_title || '')}', '${escapeHtml(u.department || '')}')">
+            <div>
+              <div style="font-weight:600; font-size:0.88rem;">${escapeHtml(u.display_name)}</div>
+              <div style="font-size:0.78rem; color:var(--text-muted);">${escapeHtml(u.email)}</div>
+            </div>
+            <div style="font-size:0.75rem; color:#0078d4; text-align:right;">
+              ${escapeHtml(u.job_title || '')}<br><span style="color:var(--text-muted);">${escapeHtml(u.department || '')}</span>
+            </div>
+          </div>
+        `).join("");
+        suggestionsBox.style.display = "block";
+      } catch (err) {
+        console.error("Error searching Entra ID users:", err);
+      }
+    }
+
+    function selectEntraUserCandidate(context, email, name, jobTitle, department) {
+      if (context === "portal") {
+        document.getElementById("add-user-suggestions").style.display = "none";
+        document.getElementById("add-user-search-input").value = email;
+        document.getElementById("add-user-selected-email").value = email;
+        document.getElementById("add-user-selected-name").value = name;
+        document.getElementById("add-user-selected-dept").value = department;
+
+        document.getElementById("add-user-card-name").textContent = name;
+        document.getElementById("add-user-card-email").textContent = email;
+        document.getElementById("add-user-card-meta").textContent = [jobTitle, department].filter(Boolean).join(" • ");
+        document.getElementById("add-user-avatar").textContent = name ? name.charAt(0).toUpperCase() : "?";
+        document.getElementById("add-user-preview-card").style.display = "block";
+      } else {
+        document.getElementById("add-res-suggestions").style.display = "none";
+        document.getElementById("add-res-search-input").value = email;
+        document.getElementById("add-res-selected-email").value = email;
+        document.getElementById("add-res-selected-name").value = name;
+        if (department) {
+          document.getElementById("add-res-dept-input").value = department;
+        }
+
+        document.getElementById("add-res-card-name").textContent = name;
+        document.getElementById("add-res-card-email").textContent = email;
+        document.getElementById("add-res-card-meta").textContent = [jobTitle, department].filter(Boolean).join(" • ");
+        document.getElementById("add-res-avatar").textContent = name ? name.charAt(0).toUpperCase() : "?";
+        document.getElementById("add-res-preview-card").style.display = "block";
+      }
+    }
+
+    // --- MODAL 1: ADD PORTAL USER ---
+
+    function openAddUserModal() {
+      document.getElementById("add-user-search-input").value = "";
+      document.getElementById("add-user-selected-email").value = "";
+      document.getElementById("add-user-selected-name").value = "";
+      document.getElementById("add-user-selected-dept").value = "";
+      document.getElementById("add-user-preview-card").style.display = "none";
+      document.getElementById("add-user-suggestions").style.display = "none";
+      document.getElementById("add-user-also-resource-chk").checked = false;
+      document.getElementById("add-user-resource-extra-fields").style.display = "none";
+      populateCalendarDropdown("add-user-res-cal-select");
+      document.getElementById("add-user-modal").style.display = "flex";
+    }
+
+    function closeAddUserModal() {
+      document.getElementById("add-user-modal").style.display = "none";
+    }
+
+    function toggleAddUserResourceFields() {
+      const chk = document.getElementById("add-user-also-resource-chk").checked;
+      document.getElementById("add-user-resource-extra-fields").style.display = chk ? "grid" : "none";
+    }
+
+    async function submitAddUserByEmail() {
+      let email = document.getElementById("add-user-selected-email").value.trim();
+      let dname = document.getElementById("add-user-selected-name").value.trim();
+      const rawInput = document.getElementById("add-user-search-input").value.trim();
+
+      if (!email && rawInput.includes("@")) {
+        email = rawInput;
+      }
+      if (!email) {
+        alert("Please enter a valid user email address.");
+        return;
+      }
+
+      const role = document.getElementById("add-user-role-select").value;
+      const addAsRes = document.getElementById("add-user-also-resource-chk").checked;
+      const calId = parseInt(document.getElementById("add-user-res-cal-select").value || "1");
+      const stdRate = parseFloat(document.getElementById("add-user-res-rate-input").value || "0.0");
+      const dept = document.getElementById("add-user-selected-dept").value.trim() || "Operations";
+
+      try {
+        const resp = await fetch("/api/users/add-by-email", {
+          method: "POST",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: email,
+            display_name: dname || null,
+            role: role,
+            add_as_resource: addAsRes,
+            department: dept,
+            base_calendar_id: calId,
+            standard_rate: stdRate
+          })
+        });
+
+        if (resp.ok) {
+          const res = await resp.json();
+          alert(`Portal access granted to ${res.display_name} (${res.email}) with role: ${res.role}` + (addAsRes ? " and added to Resource Pool!" : "!"));
+          closeAddUserModal();
+          loadPortalUsers();
+          if (addAsRes) loadResources();
+        } else {
+          const err = await resp.json();
+          alert("Error: " + (err.detail || "Could not grant portal access"));
+        }
+      } catch (err) {
+        alert("Failed to add portal user");
+      }
+    }
+
+    // --- MODAL 2: ADD RESOURCE FROM ENTRA ID ---
+
+    function openAddResourceEntraModal() {
+      document.getElementById("add-res-search-input").value = "";
+      document.getElementById("add-res-selected-email").value = "";
+      document.getElementById("add-res-selected-name").value = "";
+      document.getElementById("add-res-dept-input").value = "Engineering";
+      document.getElementById("add-res-std-rate").value = "0.00";
+      document.getElementById("add-res-ot-rate").value = "0.00";
+      document.getElementById("add-res-preview-card").style.display = "none";
+      document.getElementById("add-res-suggestions").style.display = "none";
+      populateCalendarDropdown("add-res-cal-select");
+      document.getElementById("add-resource-modal").style.display = "flex";
+    }
+
+    function closeAddResourceModal() {
+      document.getElementById("add-resource-modal").style.display = "none";
+    }
+
+    async function submitAddResourceByEmail() {
+      let email = document.getElementById("add-res-selected-email").value.trim();
+      let dname = document.getElementById("add-res-selected-name").value.trim();
+      const rawInput = document.getElementById("add-res-search-input").value.trim();
+
+      if (!email && rawInput.includes("@")) {
+        email = rawInput;
+      }
+      if (!email) {
+        alert("Please enter a valid user email address.");
+        return;
+      }
+
+      const dept = document.getElementById("add-res-dept-input").value.trim() || "Operations";
+      const calId = parseInt(document.getElementById("add-res-cal-select").value || "1");
+      const stdRate = parseFloat(document.getElementById("add-res-std-rate").value || "0.0");
+      const otRate = parseFloat(document.getElementById("add-res-ot-rate").value || "0.0");
+
+      try {
+        const resp = await fetch("/api/resources/add-by-email", {
+          method: "POST",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: email,
+            display_name: dname || null,
+            department: dept,
+            base_calendar_id: calId,
+            standard_rate: stdRate,
+            overtime_rate: otRate
+          })
+        });
+
+        if (resp.ok) {
+          const res = await resp.json();
+          alert(`Resource '${res.name}' successfully added to Master Resource Pool!`);
+          closeAddResourceModal();
+          loadResources();
+        } else {
+          const err = await resp.json();
+          alert("Error: " + (err.detail || "Could not add resource"));
+        }
+      } catch (err) {
+        alert("Failed to add resource");
+      }
+    }
+
+    // --- MODAL 3: IMPORT FROM SECURITY GROUP ---
+
+    async function openImportGroupModal(targetMode = "BOTH") {
+      const modal = document.getElementById("import-group-modal");
+      const targetSelect = document.getElementById("import-group-target-select");
+      if (targetSelect) targetSelect.value = targetMode;
+
+      populateCalendarDropdown("import-group-cal-select");
+      onImportTargetChanged();
+      document.getElementById("import-group-members-list").innerHTML = `<div style="color:var(--text-muted); text-align:center; padding:1.5rem;">Select a security group above to view its members.</div>`;
+      document.getElementById("import-group-members-count").textContent = "0";
+      document.getElementById("import-group-confirm-btn").disabled = true;
+
+      modal.style.display = "flex";
+      await loadEntraSecurityGroupsDropdown();
+    }
+
+    function closeImportGroupModal() {
+      document.getElementById("import-group-modal").style.display = "none";
+    }
+
+    function onImportTargetChanged() {
+      const mode = document.getElementById("import-group-target-select").value;
+      const roleGroup = document.getElementById("import-group-role-group");
+      const calGroup = document.getElementById("import-group-cal-group");
+
+      if (mode === "USERS") {
+        roleGroup.style.display = "flex";
+        calGroup.style.display = "none";
+      } else if (mode === "RESOURCES") {
+        roleGroup.style.display = "none";
+        calGroup.style.display = "flex";
+      } else {
+        roleGroup.style.display = "flex";
+        calGroup.style.display = "flex";
+      }
+    }
+
+    async function loadEntraSecurityGroupsDropdown() {
+      const select = document.getElementById("import-group-select");
+      select.innerHTML = `<option value="">Loading security groups from Entra ID...</option>`;
+      try {
+        const resp = await fetch("/api/entra/groups", { headers: getAuthHeaders() });
+        if (!resp.ok) {
+          select.innerHTML = `<option value="">Failed to load groups</option>`;
+          return;
+        }
+        entraGroupsList = await resp.json();
+        select.innerHTML = `<option value="">-- Choose Security Group (${entraGroupsList.length} available) --</option>`;
+        entraGroupsList.forEach(g => {
+          const opt = document.createElement("option");
+          opt.value = g.id;
+          opt.textContent = `${g.display_name} (${g.members_count || 0} members)`;
+          select.appendChild(opt);
+        });
+      } catch (err) {
+        select.innerHTML = `<option value="">Error connecting to Entra ID</option>`;
+      }
+    }
+
+    async function onSecurityGroupSelected() {
+      const groupId = document.getElementById("import-group-select").value;
+      const membersList = document.getElementById("import-group-members-list");
+      const countSpan = document.getElementById("import-group-members-count");
+      const confirmBtn = document.getElementById("import-group-confirm-btn");
+
+      if (!groupId) {
+        membersList.innerHTML = `<div style="color:var(--text-muted); text-align:center; padding:1.5rem;">Select a security group above to view its members.</div>`;
+        countSpan.textContent = "0";
+        confirmBtn.disabled = true;
+        return;
+      }
+
+      membersList.innerHTML = `<div style="text-align:center; padding:1.5rem;"><i class="fa-solid fa-spinner fa-spin"></i> Fetching members from Entra ID...</div>`;
+
+      try {
+        const resp = await fetch(`/api/entra/groups/${groupId}/members`, { headers: getAuthHeaders() });
+        if (!resp.ok) {
+          membersList.innerHTML = `<div style="color:#a80000; text-align:center; padding:1.5rem;">Failed to fetch group members.</div>`;
+          return;
+        }
+        currentGroupMembers = await resp.json();
+        countSpan.textContent = currentGroupMembers.length;
+
+        if (currentGroupMembers.length === 0) {
+          membersList.innerHTML = `<div style="color:var(--text-muted); text-align:center; padding:1.5rem;">No user members found in this security group.</div>`;
+          confirmBtn.disabled = true;
+          return;
+        }
+
+        membersList.innerHTML = currentGroupMembers.map(m => `
+          <div style="display:flex; align-items:center; gap:0.6rem; padding:0.4rem 0.5rem; border-bottom:1px solid #f3f2f1;">
+            <input type="checkbox" class="group-member-chk" value="${escapeHtml(m.email)}" checked>
+            <div style="flex:1;">
+              <span style="font-weight:600;">${escapeHtml(m.display_name)}</span>
+              <span style="color:var(--text-muted); font-size:0.8rem; margin-left:0.5rem;">(${escapeHtml(m.email)})</span>
+            </div>
+            <div style="font-size:0.75rem; color:#0078d4;">
+              ${escapeHtml(m.job_title || '')} • ${escapeHtml(m.department || '')}
+            </div>
+          </div>
+        `).join("");
+
+        confirmBtn.disabled = false;
+      } catch (err) {
+        membersList.innerHTML = `<div style="color:#a80000; text-align:center; padding:1.5rem;">Error loading group members</div>`;
+      }
+    }
+
+    function toggleAllGroupMembers() {
+      const allChecked = document.getElementById("import-group-check-all").checked;
+      document.querySelectorAll(".group-member-chk").forEach(chk => {
+        chk.checked = allChecked;
+      });
+    }
+
+    async function submitImportGroup() {
+      const groupId = document.getElementById("import-group-select").value;
+      if (!groupId) {
+        alert("Please select a security group.");
+        return;
+      }
+
+      const selectedEmails = Array.from(document.querySelectorAll(".group-member-chk:checked")).map(c => c.value);
+      if (selectedEmails.length === 0) {
+        alert("Please select at least one member to import.");
+        return;
+      }
+
+      const target = document.getElementById("import-group-target-select").value;
+      const userRole = document.getElementById("import-group-role-select").value;
+      const calId = parseInt(document.getElementById("import-group-cal-select").value || "1");
+
+      const matchedGroup = entraGroupsList.find(g => g.id === groupId);
+      const groupName = matchedGroup ? matchedGroup.display_name : groupId;
+
+      const endpoint = target === "RESOURCES" ? "/api/resources/import-group" : "/api/users/import-group";
+
+      try {
+        const resp = await fetch(endpoint, {
+          method: "POST",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({
+            group_id: groupId,
+            group_name: groupName,
+            target: target,
+            user_role: userRole,
+            selected_emails: selectedEmails,
+            default_calendar_id: calId,
+            default_rate: 0.0
+          })
+        });
+
+        if (resp.ok) {
+          const res = await resp.json();
+          let summary = `Import from '${res.group_name}' complete!\n`;
+          if (target === "USERS" || target === "BOTH") {
+            summary += `• Portal Users: ${res.users_added} added, ${res.users_skipped} already existed.\n`;
+          }
+          if (target === "RESOURCES" || target === "BOTH") {
+            summary += `• Master Resources: ${res.resources_added} added, ${res.resources_skipped} already existed.\n`;
+          }
+          alert(summary);
+          closeImportGroupModal();
+          loadPortalUsers();
+          loadResources();
+        } else {
+          const err = await resp.json();
+          alert("Error importing group: " + (err.detail || "Unknown error"));
+        }
+      } catch (err) {
+        alert("Failed to import security group members");
+      }
+    }
+
+    async function populateCalendarDropdown(selectElementId) {
+      const select = document.getElementById(selectElementId);
+      if (!select) return;
+      if (!allCalendars || allCalendars.length === 0) {
+        try {
+          const resp = await fetch("/api/calendars", { headers: getAuthHeaders() });
+          if (resp.ok) allCalendars = await resp.json();
+        } catch (e) {}
+      }
+      select.innerHTML = "";
+      if (allCalendars && allCalendars.length > 0) {
+        allCalendars.forEach(c => {
+          const opt = document.createElement("option");
+          opt.value = c.id;
+          opt.textContent = `${c.name} (${c.country_code})`;
+          select.appendChild(opt);
+        });
+      } else {
+        const opt = document.createElement("option");
+        opt.value = "1";
+        opt.textContent = "Lithuania – Standard Enterprise Calendar (LT)";
+        select.appendChild(opt);
+      }
     }
 
     // Init

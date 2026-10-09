@@ -12,6 +12,7 @@ from backend.app.db.models import (
     CalendarWeekdayDB,
     CalendarWorkingShiftDB,
     CustomFieldDB,
+    PortalUserDB,
     RatePeriodDB,
     ResourceDB,
     ResourceFieldValueDB,
@@ -478,4 +479,33 @@ def init_db(db: Session) -> None:
                     )
                     db.add(st_status)
 
+        # Seed initial authorized portal users if empty
+        if not db.query(PortalUserDB).first():
+            initial_users = [
+                PortalUserDB(
+                    email="admin@enterprise.com",
+                    display_name="Enterprise Administrator",
+                    role="Admin",
+                    is_active=True,
+                    source="MANUAL",
+                ),
+                PortalUserDB(
+                    email="domas.krupavicius@garantgroup.eu",
+                    display_name="Domas Krupavičius",
+                    role="PM",
+                    is_active=True,
+                    source="EMAIL",
+                ),
+                PortalUserDB(
+                    email="rasa.zukauskiene@garantgroup.eu",
+                    display_name="Rasa Žukauskienė",
+                    role="FinanceManager",
+                    is_active=True,
+                    source="EMAIL",
+                ),
+            ]
+            for u in initial_users:
+                db.add(u)
+
         db.commit()
+
