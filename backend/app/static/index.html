@@ -324,7 +324,7 @@
     <!-- TAB 6: PORTAL USERS & ACCESS MANAGEMENT (ENTRA ID) -->
     <section id="tab-users" style="display: none;">
       <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.25rem;">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem; margin-bottom: 0.75rem;">
           <div>
             <h2 style="margin: 0;"><i class="fa-solid fa-user-shield" style="color: var(--accent);"></i> Portal User Access Management</h2>
             <div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">
@@ -332,10 +332,14 @@
             </div>
           </div>
           <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <button class="btn btn-secondary" onclick="openEntraConfigModal()"><i class="fa-brands fa-microsoft"></i> Entra ID Setup</button>
             <button class="btn" onclick="openAddUserModal()"><i class="fa-solid fa-user-plus"></i> Add User by Email</button>
             <button class="btn btn-secondary" onclick="openImportGroupModal('USERS')"><i class="fa-solid fa-users-gear"></i> Add Users by Security Group</button>
           </div>
         </div>
+
+        <!-- Live Entra ID Connection Banner -->
+        <div id="portal-entra-banner" style="margin-bottom: 1rem;"></div>
 
         <div class="action-bar" style="margin-bottom: 1rem;">
           <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
@@ -690,11 +694,15 @@
         Bulk-import members of a chosen security group as Portal Users and/or MS Project Master Resources.
       </p>
 
+      <!-- Connection status banner -->
+      <div id="import-group-status-banner" style="margin-bottom: 1rem;"></div>
+
       <div class="form-grid" style="margin-bottom: 1rem;">
         <div class="form-group">
-          <label>Select Entra ID Security Group *</label>
-          <select id="import-group-select" onchange="onSecurityGroupSelected()" style="padding: 0.45rem; font-size: 0.9rem;">
-            <option value="">-- Choose Security Group --</option>
+          <label>Search or Select Security Group *</label>
+          <input type="text" id="import-group-search-input" placeholder="Type group name or paste Object ID..." oninput="debounceSecurityGroupSearch()" style="padding: 0.45rem; font-size: 0.9rem; margin-bottom: 0.4rem;">
+          <select id="import-group-select" onchange="onSecurityGroupDropdownSelected()" style="padding: 0.45rem; font-size: 0.9rem;">
+            <option value="">-- Choose from available groups --</option>
           </select>
         </div>
         <div class="form-group">
@@ -743,6 +751,44 @@
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="closeImportGroupModal()">Cancel</button>
         <button class="btn" id="import-group-confirm-btn" onclick="submitImportGroup()" disabled><i class="fa-solid fa-file-import"></i> Import Selected Members</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 4: Entra ID Connection Configuration -->
+  <div id="entra-config-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="max-width: 580px;">
+      <div class="modal-header">
+        <h3><i class="fa-brands fa-microsoft" style="color: var(--accent);"></i> Microsoft Entra ID Connection Setup</h3>
+        <button style="border:none;background:none;font-size:1.2rem;cursor:pointer;" onclick="closeEntraConfigModal()">&times;</button>
+      </div>
+      <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+        Enter your Azure App Registration credentials to query live directory users and security groups from your Garant Group Microsoft 365 tenant.
+      </p>
+
+      <div id="entra-cfg-result-box" style="margin-bottom: 1rem; display: none;"></div>
+
+      <div class="form-group" style="margin-bottom: 1rem;">
+        <label>Directory (Tenant) ID *</label>
+        <input type="text" id="entra-cfg-tenant-id" placeholder="e.g. 72f988bf-86f1-41af-91ab-2d7cd011db47" style="padding: 0.5rem; font-family: monospace; font-size: 0.9rem;">
+        <span style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;">From Azure Portal &gt; Entra ID &gt; Overview &gt; Directory (tenant) ID</span>
+      </div>
+
+      <div class="form-group" style="margin-bottom: 1rem;">
+        <label>Application (Client) ID *</label>
+        <input type="text" id="entra-cfg-client-id" placeholder="e.g. 297f6426-302d-45f8-b3d6-444a9561074e" style="padding: 0.5rem; font-family: monospace; font-size: 0.9rem;">
+        <span style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;">From Azure Portal &gt; App Registrations &gt; Application (client) ID</span>
+      </div>
+
+      <div class="form-group" style="margin-bottom: 1.25rem;">
+        <label>Client Secret Value *</label>
+        <input type="password" id="entra-cfg-client-secret" placeholder="Secret Value string from Certificates &amp; secrets" style="padding: 0.5rem; font-size: 0.9rem;">
+        <span style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;">Required API permissions: <code>Group.Read.All</code>, <code>User.Read.All</code> (Application permissions with Admin Consent)</span>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeEntraConfigModal()">Cancel</button>
+        <button class="btn" id="entra-cfg-save-btn" onclick="submitEntraConfig()"><i class="fa-solid fa-plug"></i> Test &amp; Save Connection</button>
       </div>
     </div>
   </div>
@@ -1799,6 +1845,7 @@
 
     async function loadPortalUsers() {
       try {
+        await loadEntraStatus();
         const showInactive = document.getElementById("users-show-inactive")?.checked ?? true;
         const resp = await fetch(`/api/users?include_inactive=${showInactive}`, { headers: getAuthHeaders() });
         if (!resp.ok) {
@@ -2151,6 +2198,106 @@
 
     // --- MODAL 3: IMPORT FROM SECURITY GROUP ---
 
+    // --- ENTRA ID CONNECTION STATUS & CREDENTIAL CONFIG ---
+
+    let entraStatusData = null;
+
+    async function loadEntraStatus() {
+      try {
+        const resp = await fetch("/api/entra/status", { headers: getAuthHeaders() });
+        if (!resp.ok) return;
+        entraStatusData = await resp.json();
+        renderEntraStatusBanners();
+      } catch (err) {
+        console.error("Failed to load Entra ID status:", err);
+      }
+    }
+
+    function renderEntraStatusBanners() {
+      if (!entraStatusData) return;
+      const portalBanner = document.getElementById("portal-entra-banner");
+      const groupBanner = document.getElementById("import-group-status-banner");
+
+      let bannerHtml = "";
+      if (entraStatusData.connected && entraStatusData.mode === "LIVE") {
+        bannerHtml = `
+          <div style="background:#dff6dd; border:1px solid #107c41; border-radius:4px; padding:0.6rem 0.85rem; font-size:0.85rem; color:#107c41; display:flex; justify-content:space-between; align-items:center;">
+            <span><i class="fa-solid fa-circle-check"></i> <strong>Live Entra ID Connected:</strong> ${escapeHtml(entraStatusData.tenant_name || 'Microsoft 365 Tenant')} (Tenant: <code>${escapeHtml(entraStatusData.tenant_id || '')}</code>)</span>
+            <button class="btn btn-sm btn-secondary" onclick="openEntraConfigModal()"><i class="fa-solid fa-gear"></i> Settings</button>
+          </div>
+        `;
+      } else {
+        bannerHtml = `
+          <div style="background:#fff4ce; border:1px solid #fce100; border-radius:4px; padding:0.65rem 0.85rem; font-size:0.85rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+            <span><i class="fa-solid fa-triangle-exclamation" style="color:#795b00;"></i> <strong>Entra ID Not Connected:</strong> Showing local sample groups. To import your real organization security groups, connect your Azure App Registration credentials.</span>
+            <button class="btn btn-sm" onclick="openEntraConfigModal()" style="background:#0078d4;"><i class="fa-brands fa-microsoft"></i> Connect Entra ID</button>
+          </div>
+        `;
+      }
+
+      if (portalBanner) portalBanner.innerHTML = bannerHtml;
+      if (groupBanner) groupBanner.innerHTML = bannerHtml;
+    }
+
+    function openEntraConfigModal() {
+      const modal = document.getElementById("entra-config-modal");
+      const box = document.getElementById("entra-cfg-result-box");
+      box.style.display = "none";
+      if (entraStatusData) {
+        if (entraStatusData.tenant_id) document.getElementById("entra-cfg-tenant-id").value = entraStatusData.tenant_id;
+        if (entraStatusData.client_id) document.getElementById("entra-cfg-client-id").value = entraStatusData.client_id;
+      }
+      document.getElementById("entra-cfg-client-secret").value = "";
+      modal.style.display = "flex";
+    }
+
+    function closeEntraConfigModal() {
+      document.getElementById("entra-config-modal").style.display = "none";
+    }
+
+    async function submitEntraConfig() {
+      const tid = document.getElementById("entra-cfg-tenant-id").value.trim();
+      const cid = document.getElementById("entra-cfg-client-id").value.trim();
+      const sec = document.getElementById("entra-cfg-client-secret").value.trim();
+      const box = document.getElementById("entra-cfg-result-box");
+      const btn = document.getElementById("entra-cfg-save-btn");
+
+      if (!tid || !cid || !sec) {
+        box.style.display = "block";
+        box.innerHTML = `<div style="background:#fde7e9; color:#a80000; padding:0.6rem; border-radius:4px; font-size:0.85rem;">All fields (Tenant ID, Client ID, Client Secret) are required.</div>`;
+        return;
+      }
+
+      btn.disabled = true;
+      box.style.display = "block";
+      box.innerHTML = `<div style="background:#eff6fc; color:#0078d4; padding:0.6rem; border-radius:4px; font-size:0.85rem;"><i class="fa-solid fa-spinner fa-spin"></i> Authenticating with Microsoft Entra ID and verifying Graph API...</div>`;
+
+      try {
+        const resp = await fetch("/api/entra/config", {
+          method: "POST",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ tenant_id: tid, client_id: cid, client_secret: sec })
+        });
+        const res = await resp.json();
+        if (resp.ok) {
+          box.innerHTML = `<div style="background:#dff6dd; color:#107c41; padding:0.6rem; border-radius:4px; font-size:0.85rem;"><i class="fa-solid fa-check"></i> <strong>Success!</strong> ${escapeHtml(res.message)}</div>`;
+          await loadEntraStatus();
+          await loadEntraSecurityGroupsDropdown();
+          setTimeout(() => {
+            closeEntraConfigModal();
+          }, 1200);
+        } else {
+          box.innerHTML = `<div style="background:#fde7e9; color:#a80000; padding:0.6rem; border-radius:4px; font-size:0.85rem;"><i class="fa-solid fa-circle-xmark"></i> <strong>Connection Failed:</strong><br>${escapeHtml(res.detail || "Authentication error")}</div>`;
+        }
+      } catch (err) {
+        box.innerHTML = `<div style="background:#fde7e9; color:#a80000; padding:0.6rem; border-radius:4px; font-size:0.85rem;">Failed to connect to server: ${escapeHtml(err.message)}</div>`;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // --- MODAL 3: IMPORT FROM SECURITY GROUP ---
+
     async function openImportGroupModal(targetMode = "BOTH") {
       const modal = document.getElementById("import-group-modal");
       const targetSelect = document.getElementById("import-group-target-select");
@@ -2158,10 +2305,12 @@
 
       populateCalendarDropdown("import-group-cal-select");
       onImportTargetChanged();
+      document.getElementById("import-group-search-input").value = "";
       document.getElementById("import-group-members-list").innerHTML = `<div style="color:var(--text-muted); text-align:center; padding:1.5rem;">Select a security group above to view its members.</div>`;
       document.getElementById("import-group-members-count").textContent = "0";
       document.getElementById("import-group-confirm-btn").disabled = true;
 
+      await loadEntraStatus();
       modal.style.display = "flex";
       await loadEntraSecurityGroupsDropdown();
     }
@@ -2187,47 +2336,70 @@
       }
     }
 
-    async function loadEntraSecurityGroupsDropdown() {
+    let groupSearchTimer = null;
+    function debounceSecurityGroupSearch() {
+      clearTimeout(groupSearchTimer);
+      groupSearchTimer = setTimeout(async () => {
+        const q = document.getElementById("import-group-search-input")?.value.trim() || "";
+        await loadEntraSecurityGroupsDropdown(q);
+      }, 350);
+    }
+
+    async function loadEntraSecurityGroupsDropdown(query = "") {
       const select = document.getElementById("import-group-select");
-      select.innerHTML = `<option value="">Loading security groups from Entra ID...</option>`;
+      select.innerHTML = `<option value="">Searching Entra ID groups...</option>`;
       try {
-        const resp = await fetch("/api/entra/groups", { headers: getAuthHeaders() });
+        const url = query ? `/api/entra/groups?q=${encodeURIComponent(query)}` : "/api/entra/groups";
+        const resp = await fetch(url, { headers: getAuthHeaders() });
         if (!resp.ok) {
           select.innerHTML = `<option value="">Failed to load groups</option>`;
           return;
         }
         entraGroupsList = await resp.json();
-        select.innerHTML = `<option value="">-- Choose Security Group (${entraGroupsList.length} available) --</option>`;
+        if (entraGroupsList.length === 0) {
+          select.innerHTML = `<option value="">No groups found matching "${escapeHtml(query)}"</option>`;
+          return;
+        }
+        select.innerHTML = `<option value="">-- Choose from ${entraGroupsList.length} groups found --</option>`;
         entraGroupsList.forEach(g => {
           const opt = document.createElement("option");
           opt.value = g.id;
-          opt.textContent = `${g.display_name} (${g.members_count || 0} members)`;
+          opt.textContent = `${g.display_name} ${g.members_count ? `(${g.members_count} members)` : ''}`;
           select.appendChild(opt);
         });
+
+        // If only 1 group matched query, auto-select it!
+        if (query && entraGroupsList.length === 1) {
+          select.value = entraGroupsList[0].id;
+          onSecurityGroupDropdownSelected();
+        }
       } catch (err) {
         select.innerHTML = `<option value="">Error connecting to Entra ID</option>`;
       }
     }
 
-    async function onSecurityGroupSelected() {
+    function onSecurityGroupDropdownSelected() {
       const groupId = document.getElementById("import-group-select").value;
+      if (groupId) {
+        const matched = entraGroupsList.find(g => g.id === groupId);
+        if (matched) {
+          document.getElementById("import-group-search-input").value = matched.display_name;
+        }
+        fetchAndDisplayGroupMembers(groupId);
+      }
+    }
+
+    async function fetchAndDisplayGroupMembers(groupId) {
       const membersList = document.getElementById("import-group-members-list");
       const countSpan = document.getElementById("import-group-members-count");
       const confirmBtn = document.getElementById("import-group-confirm-btn");
-
-      if (!groupId) {
-        membersList.innerHTML = `<div style="color:var(--text-muted); text-align:center; padding:1.5rem;">Select a security group above to view its members.</div>`;
-        countSpan.textContent = "0";
-        confirmBtn.disabled = true;
-        return;
-      }
 
       membersList.innerHTML = `<div style="text-align:center; padding:1.5rem;"><i class="fa-solid fa-spinner fa-spin"></i> Fetching members from Entra ID...</div>`;
 
       try {
         const resp = await fetch(`/api/entra/groups/${groupId}/members`, { headers: getAuthHeaders() });
         if (!resp.ok) {
-          membersList.innerHTML = `<div style="color:#a80000; text-align:center; padding:1.5rem;">Failed to fetch group members.</div>`;
+          membersList.innerHTML = `<div style="color:#a80000; text-align:center; padding:1.5rem;">Failed to fetch group members. Check permissions in Azure App Registration.</div>`;
           return;
         }
         currentGroupMembers = await resp.json();

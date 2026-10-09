@@ -143,10 +143,17 @@ MOCK_SECURITY_GROUPS = [
 
 
 class EntraGraphService:
-    def __init__(self):
-        self.client_id = settings.AZURE_AD_CLIENT_ID
-        self.tenant_id = settings.AZURE_AD_TENANT_ID
-        self.client_secret = settings.AZURE_AD_CLIENT_SECRET
+    @property
+    def client_id(self) -> str:
+        return settings.AZURE_AD_CLIENT_ID
+
+    @property
+    def tenant_id(self) -> str:
+        return settings.AZURE_AD_TENANT_ID
+
+    @property
+    def client_secret(self) -> str:
+        return settings.AZURE_AD_CLIENT_SECRET
 
     @property
     def is_configured(self) -> bool:
@@ -165,11 +172,68 @@ class EntraGraphService:
             result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
             if "access_token" in result:
                 return result["access_token"]
-            logger.error(f"Failed to acquire Microsoft Graph token: {result.get('error_description')}")
+            err_desc = result.get("error_description", result.get("error", "Unknown MSAL error"))
+            logger.error(f"Failed to acquire Microsoft Graph token: {err_desc}")
             return None
         except Exception as e:
             logger.exception(f"Error acquiring MSAL token: {e}")
             return None
+
+    def test_connection(self) -> Dict[str, Any]:
+        """
+        Tests connection to Microsoft Entra ID and Microsoft Graph.
+        Returns connection state, tenant display name, and diagnostic details.
+        """
+        if not self.is_configured:
+            return {
+                "connected": False,
+                "configured": False,
+                "mode": "LOCAL_FALLBACK",
+                "message": "Entra ID credentials not configured. Using local demo directory.",
+            }
+
+        token = self._acquire_token()
+        if not token:
+            return {
+                "connected": False,
+                "configured": True,
+                "mode": "ERROR",
+                "message": "Authentication failed. Check your Tenant ID, Client ID, and Client Secret in Azure App Registration.",
+            }
+
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.get(
+                    "https://graph.microsoft.com/v1.0/organization?$select=id,displayName",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if resp.status_code == 200:
+                    val = resp.json().get("value", [{}])[0]
+                    tenant_name = val.get("displayName") or "Garant Group Entra ID"
+                    return {
+                        "connected": True,
+                        "configured": True,
+                        "mode": "LIVE",
+                        "tenant_name": tenant_name,
+                        "tenant_id": self.tenant_id,
+                        "client_id": self.client_id,
+                        "message": f"Connected to Microsoft Entra ID ({tenant_name})",
+                    }
+                else:
+                    return {
+                        "connected": False,
+                        "configured": True,
+                        "mode": "ERROR",
+                        "message": f"Microsoft Graph error (HTTP {resp.status_code}): {resp.text}",
+                    }
+        except Exception as e:
+            return {
+                "connected": False,
+                "configured": True,
+                "mode": "ERROR",
+                "message": f"Connection network error: {str(e)}",
+            }
+
 
     def search_users(self, query: str, limit: int = 15) -> List[Dict[str, Any]]:
         """
@@ -281,30 +345,54 @@ class EntraGraphService:
             }
         return None
 
-    def search_security_groups(self, query: str = "", limit: int = 20) -> List[Dict[str, Any]]:
+    def search_security_groups(self, query: str = "", limit: int = 50) -> List[Dict[str, Any]]:
         """
-        Searches Entra ID security groups.
+        Searches Entra ID security groups and Microsoft 365 groups.
+        Supports lookup by group name, email, or direct Group Object ID (GUID).
         """
         token = self._acquire_token()
         if token:
             try:
                 q = query.replace("'", "''").strip()
-                filter_clause = "securityEnabled eq true"
+                import uuid
+                is_guid = False
+                try:
+                    uuid.UUID(q)
+                    is_guid = True
+                except Exception:
+                    pass
+
+                # If a direct Object ID GUID is provided, query directly
+                if is_guid:
+                    url = f"https://graph.microsoft.com/v1.0/groups/{q}?$select=id,displayName,mail,description,securityEnabled"
+                    with httpx.Client(timeout=10.0) as client:
+                        resp = client.get(url, headers={"Authorization": f"Bearer {token}"})
+                        if resp.status_code == 200:
+                            g = resp.json()
+                            return [{
+                                "id": g.get("id"),
+                                "display_name": g.get("displayName") or "Group",
+                                "mail": g.get("mail") or "",
+                                "description": g.get("description") or "",
+                                "security_enabled": g.get("securityEnabled", True),
+                                "members_count": 0,
+                            }]
+
+                # Otherwise query groups list (including both security groups & M365 groups)
                 if q:
-                    filter_clause += f" and (startswith(displayName,'{q}') or startswith(mail,'{q}'))"
-                url = (
-                    f"https://graph.microsoft.com/v1.0/groups?"
-                    f"$filter={filter_clause}&$select=id,displayName,mail,description,securityEnabled"
-                    f"&$top={limit}"
-                )
-                with httpx.Client(timeout=8.0) as client:
+                    filter_clause = f"startswith(displayName,'{q}') or startswith(mail,'{q}')"
+                    url = f"https://graph.microsoft.com/v1.0/groups?$filter={filter_clause}&$select=id,displayName,mail,description,securityEnabled&$top={limit}"
+                else:
+                    url = f"https://graph.microsoft.com/v1.0/groups?$select=id,displayName,mail,description,securityEnabled&$top={limit}"
+
+                with httpx.Client(timeout=10.0) as client:
                     resp = client.get(url, headers={"Authorization": f"Bearer {token}"})
                     if resp.status_code == 200:
                         data = resp.json().get("value", [])
                         return [
                             {
                                 "id": g.get("id"),
-                                "display_name": g.get("displayName", ""),
+                                "display_name": g.get("displayName") or "Unnamed Group",
                                 "mail": g.get("mail") or "",
                                 "description": g.get("description") or "",
                                 "security_enabled": g.get("securityEnabled", True),
@@ -312,6 +400,8 @@ class EntraGraphService:
                             }
                             for g in data
                         ]
+                    else:
+                        logger.warning(f"Graph groups query returned {resp.status_code}: {resp.text}")
             except Exception as e:
                 logger.exception(f"Error searching security groups from Microsoft Graph: {e}")
 
@@ -319,7 +409,7 @@ class EntraGraphService:
         q_lower = query.lower().strip()
         results = []
         for g in MOCK_SECURITY_GROUPS:
-            if not q_lower or q_lower in g["display_name"].lower() or (g["mail"] and q_lower in g["mail"].lower()):
+            if not q_lower or q_lower in g["display_name"].lower() or (g["mail"] and q_lower in g["mail"].lower()) or g["id"] == q_lower:
                 results.append({
                     "id": g["id"],
                     "display_name": g["display_name"],
@@ -332,17 +422,23 @@ class EntraGraphService:
 
     def get_group_members(self, group_id: str) -> List[Dict[str, Any]]:
         """
-        Retrieves all user members of an Entra ID security group.
+        Retrieves user members of an Entra ID security group.
+        Uses /transitiveMembers (including nested groups) with fallback to /members.
         """
         token = self._acquire_token()
         if token:
             try:
                 url = (
-                    f"https://graph.microsoft.com/v1.0/groups/{group_id}/members"
+                    f"https://graph.microsoft.com/v1.0/groups/{group_id}/transitiveMembers"
                     f"?$select=id,displayName,mail,userPrincipalName,jobTitle,department"
                 )
-                with httpx.Client(timeout=8.0) as client:
+                with httpx.Client(timeout=12.0) as client:
                     resp = client.get(url, headers={"Authorization": f"Bearer {token}"})
+                    if resp.status_code != 200:
+                        # Fallback to direct members
+                        url = f"https://graph.microsoft.com/v1.0/groups/{group_id}/members?$select=id,displayName,mail,userPrincipalName,jobTitle,department"
+                        resp = client.get(url, headers={"Authorization": f"Bearer {token}"})
+
                     if resp.status_code == 200:
                         data = resp.json().get("value", [])
                         return [
@@ -355,7 +451,7 @@ class EntraGraphService:
                                 "department": u.get("department") or "",
                             }
                             for u in data
-                            if u.get("@odata.type", "") == "#microsoft.graph.user" or "mail" in u or "userPrincipalName" in u
+                            if "@" in (u.get("mail") or u.get("userPrincipalName", ""))
                         ]
             except Exception as e:
                 logger.exception(f"Error fetching group members from Microsoft Graph: {e}")
@@ -368,3 +464,4 @@ class EntraGraphService:
 
 
 entra_graph_service = EntraGraphService()
+

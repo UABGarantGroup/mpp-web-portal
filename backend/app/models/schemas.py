@@ -244,4 +244,21 @@ class GroupImportResult(BaseModel):
     details: List[str] = Field(default_factory=list)
 
 
+class EntraConfigUpdate(BaseModel):
+    tenant_id: str
+    client_id: str
+    client_secret: str
+
+
+class EntraStatusResponse(BaseModel):
+    configured: bool
+    connected: bool
+    mode: str  # "LIVE" or "LOCAL_FALLBACK" or "ERROR"
+    tenant_id: Optional[str] = None
+    client_id: Optional[str] = None
+    tenant_name: Optional[str] = None
+    message: str
+
+
+
 

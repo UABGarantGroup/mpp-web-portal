@@ -3,6 +3,7 @@ Database-backed REST API routes for MS Project Centralized Resource & Template H
 Enforces RBAC permissions, audit logging, multi-country calendars, and template exports.
 """
 
+import os
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 import urllib.parse
@@ -10,6 +11,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, Up
 from sqlalchemy.orm import Session
 
 from backend.app.core.auth import CurrentUser, get_current_user, require_roles
+from backend.app.core.config import settings
 from backend.app.db.models import (
     AuditLogDB,
     CalendarDB,
@@ -38,7 +40,9 @@ from backend.app.models.schemas import (
     CalendarWeekdaysUpdate,
     CostRateItem,
     CustomFieldDefinition,
+    EntraConfigUpdate,
     EntraGroupSchema,
+    EntraStatusResponse,
     EntraUserSchema,
     GroupImportRequest,
     GroupImportResult,
@@ -1209,6 +1213,79 @@ def refresh_project_template(
 
 
 # --- Entra ID (Azure AD) Selective Directory Integration ---
+
+@router.get("/api/entra/status", response_model=EntraStatusResponse, tags=["Entra ID"])
+def get_entra_status(user: CurrentUser = Depends(require_roles(["Admin", "ResourceManager"]))):
+    """
+    Returns connection and configuration status of Microsoft Entra ID.
+    """
+    res = entra_graph_service.test_connection()
+    return EntraStatusResponse(
+        configured=res.get("configured", False),
+        connected=res.get("connected", False),
+        mode=res.get("mode", "LOCAL_FALLBACK"),
+        tenant_id=res.get("tenant_id") or (settings.AZURE_AD_TENANT_ID if settings.AZURE_AD_TENANT_ID else None),
+        client_id=res.get("client_id") or (settings.AZURE_AD_CLIENT_ID if settings.AZURE_AD_CLIENT_ID else None),
+        tenant_name=res.get("tenant_name"),
+        message=res.get("message", ""),
+    )
+
+
+@router.post("/api/entra/config", response_model=EntraStatusResponse, tags=["Entra ID"])
+def save_entra_config(
+    cfg: EntraConfigUpdate,
+    user: CurrentUser = Depends(require_roles(["Admin"])),
+):
+    """
+    Saves Microsoft Entra ID connection credentials (Tenant ID, Client ID, Client Secret)
+    and verifies live connection to Microsoft Graph.
+    """
+    old_tid = settings.AZURE_AD_TENANT_ID
+    old_cid = settings.AZURE_AD_CLIENT_ID
+    old_sec = settings.AZURE_AD_CLIENT_SECRET
+
+    settings.AZURE_AD_TENANT_ID = cfg.tenant_id.strip()
+    settings.AZURE_AD_CLIENT_ID = cfg.client_id.strip()
+    settings.AZURE_AD_CLIENT_SECRET = cfg.client_secret.strip()
+
+    test_res = entra_graph_service.test_connection()
+    if not test_res.get("connected"):
+        settings.AZURE_AD_TENANT_ID = old_tid
+        settings.AZURE_AD_CLIENT_ID = old_cid
+        settings.AZURE_AD_CLIENT_SECRET = old_sec
+        raise HTTPException(
+            status_code=400,
+            detail=f"Entra ID connection test failed: {test_res.get('message', 'Invalid credentials')}",
+        )
+
+    # Persist into .env file
+    env_path = ".env"
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+    new_lines = [
+        line for line in lines
+        if not any(line.strip().startswith(k + "=") for k in ("AZURE_AD_TENANT_ID", "AZURE_AD_CLIENT_ID", "AZURE_AD_CLIENT_SECRET"))
+    ]
+    new_lines.append(f"AZURE_AD_TENANT_ID={settings.AZURE_AD_TENANT_ID}\n")
+    new_lines.append(f"AZURE_AD_CLIENT_ID={settings.AZURE_AD_CLIENT_ID}\n")
+    new_lines.append(f"AZURE_AD_CLIENT_SECRET={settings.AZURE_AD_CLIENT_SECRET}\n")
+
+    with open(env_path, "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
+
+    return EntraStatusResponse(
+        configured=True,
+        connected=True,
+        mode="LIVE",
+        tenant_id=settings.AZURE_AD_TENANT_ID,
+        client_id=settings.AZURE_AD_CLIENT_ID,
+        tenant_name=test_res.get("tenant_name"),
+        message=f"Successfully connected to Microsoft Entra ID ({test_res.get('tenant_name')})",
+    )
+
 
 @router.get("/api/entra/users", response_model=List[EntraUserSchema], tags=["Entra ID"])
 def search_entra_users(
