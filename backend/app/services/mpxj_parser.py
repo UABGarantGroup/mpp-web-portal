@@ -42,9 +42,19 @@ def _init_mpxj():
                     jvm_path = candidate
 
         if os.path.exists(jvm_path):
-            jpype.startJVM(jvm_path, classpath=jars)
+            # Ensure the directory containing awt.dll and dependent DLLs (e.g. jbr/bin) is on PATH
+            jvm_bin_dir = os.path.abspath(os.path.join(os.path.dirname(jvm_path), ".."))
+            if jvm_bin_dir not in os.environ.get("PATH", ""):
+                os.environ["PATH"] = jvm_bin_dir + os.pathsep + os.environ.get("PATH", "")
+
+            jpype.startJVM(
+                jvm_path,
+                "-Djava.awt.headless=true",
+                "-Dorg.apache.logging.log4j.simplelog.StatusLogger.level=OFF",
+                classpath=jars
+            )
             _jvm_initialized = True
-            logger.info("MPXJ JVM started successfully with %s", jvm_path)
+            logger.info("MPXJ JVM started successfully with %s (headless mode)", jvm_path)
             return True
         else:
             logger.warning("JVM path not found at %s. .mpp parsing unavailable; .xml fallback available.", jvm_path)
