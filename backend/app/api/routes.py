@@ -3,7 +3,7 @@ Database-backed REST API routes for MS Project Centralized Resource & Template H
 Enforces RBAC permissions, audit logging, multi-country calendars, and template exports.
 """
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 import urllib.parse
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
@@ -1019,6 +1019,8 @@ def get_portfolio_view(db: Session = Depends(get_db)):
             "baseline_cost": snap.baseline_cost if snap else 0.0,
             "baseline_budget": snap.baseline_budget if snap else 0.0,
             "budget_cost": snap.budget_cost if snap else p.budget_cost,
+            "last_updated_by": p.last_updated_by or (snap.source if snap else None),
+            "last_updated_at": p.last_updated_at.strftime("%Y-%m-%d %H:%M") if p.last_updated_at else (snap.recorded_at.strftime("%Y-%m-%d %H:%M") if snap else None),
             "stages": stages_map,
         }
 
@@ -1083,7 +1085,32 @@ async def upload_project_schedule(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to parse project file: {str(e)}")
 
+    # Safety check: Verify the file belongs to this project to avoid uploading to the wrong row
+    file_erp = parsed.get("erp_number")
+    file_title = parsed.get("title")
+    target_erp = proj.erp_number.strip().lower()
+
+    if file_erp:
+        if file_erp.strip().lower() != target_erp:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Project mismatch! File contains ERP '{file_erp}', but target row is '{proj.erp_number}' ({proj.name}). Upload rejected to prevent overwriting wrong project."
+            )
+    elif file_title and target_erp:
+        # Check if ERP number appears anywhere in the file title or project properties
+        clean_title = file_title.lower()
+        if target_erp not in clean_title and target_erp.replace("-", "") not in clean_title.replace("-", ""):
+            # Also check if filename has the ERP number
+            clean_fn = file.filename.lower()
+            if target_erp not in clean_fn and target_erp.replace("-", "") not in clean_fn.replace("-", ""):
+                # If neither the file properties nor the filename match the project ERP, warn and block
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Project verification error! Neither the file title ('{file_title}') nor filename ('{file.filename}') matches target ERP number '{proj.erp_number}'. Please check that you selected the schedule for this project."
+                )
+
     # Update latest project snapshot or create new one
+    now = datetime.utcnow()
     snapshot = ProjectSnapshotDB(
         project_id=proj.id,
         percent_complete=parsed["percent_complete"],
@@ -1097,8 +1124,13 @@ async def upload_project_schedule(
         baseline_budget=parsed["baseline_budget"],
         budget_cost=proj.budget_cost,
         source="UPLOAD",
+        recorded_at=now,
     )
     db.add(snapshot)
+
+    # Update project last_updated_by and last_updated_at
+    proj.last_updated_by = user.email
+    proj.last_updated_at = now
 
     # Detect generic resources in the uploaded file for the replacement wizard
     file_resources = parsed.get("resources", [])
@@ -1109,7 +1141,7 @@ async def upload_project_schedule(
         entity_id=str(proj.id),
         action="UPLOAD",
         changed_by=user.email,
-        details=f"Schedule file '{file.filename}' uploaded. % Complete: {parsed['percent_complete']}%, Cost: €{parsed['cost']}",
+        details=f"Schedule file '{file.filename}' uploaded by {user.email}. % Complete: {parsed['percent_complete']}%, Cost: €{parsed['cost']}",
     )
     db.add(audit)
     db.commit()

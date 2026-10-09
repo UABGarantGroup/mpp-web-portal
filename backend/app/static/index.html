@@ -161,8 +161,8 @@
               <th style="width: 95px;" class="text-right">Baseline Cost</th>
               <th style="width: 95px;" class="text-right">Baseline Budget</th>
               <th style="width: 95px;" class="text-right">Budget Cost</th>
+              <th style="width: 140px;" class="text-center">Last Update</th>
               <!-- Stage columns dynamically inserted here -->
-              <th style="width: 90px;" class="text-center">Export .XML</th>
             </tr>
           </thead>
           <tbody id="portfolio-tbody">
@@ -540,19 +540,18 @@
 
     function renderPortfolioTable(data) {
       const tableHead = document.querySelector("#portfolio-table thead tr");
-      // Remove previous stage headers
+      // Remove previous stage headers (base columns: 12, so keep first 12)
       while (tableHead.children.length > 12) {
-        tableHead.removeChild(tableHead.children[11]);
+        tableHead.removeChild(tableHead.lastElementChild);
       }
 
-      // Insert dynamic active stage headers before Export column
-      const exportCol = tableHead.lastElementChild;
+      // Append dynamic active stage headers after the fixed columns
       stageColumns.forEach(stage => {
         const th = document.createElement("th");
         th.style.width = "75px";
         th.className = "text-center";
         th.textContent = stage.name;
-        tableHead.insertBefore(th, exportCol);
+        tableHead.appendChild(th);
       });
 
       const tbody = document.getElementById("portfolio-tbody");
@@ -580,13 +579,13 @@
           <td class="text-right currency">€${formatNumber(group.summary.total_baseline_cost)}</td>
           <td class="text-right currency">€${formatNumber(group.summary.total_baseline_budget)}</td>
           <td class="text-right currency">€${formatNumber(group.summary.total_budget_cost)}</td>
+          <td class="text-center">--</td>
         `;
 
         // Empty cells for stages in summary row
         stageColumns.forEach(() => {
           groupCells += `<td></td>`;
         });
-        groupCells += `<td></td>`; // Export col
         trGroup.innerHTML = groupCells;
         tbody.appendChild(trGroup);
 
@@ -595,11 +594,28 @@
           const trProj = document.createElement("tr");
           trProj.className = "project-row";
 
+          // Format last update display: date + user
+          const lastUpDate = p.last_updated_at || "--";
+          const lastUpUser = p.last_updated_by ? `<div style="font-size:0.75rem; color:var(--text-muted); text-overflow:ellipsis; overflow:hidden; max-width:140px;" title="${p.last_updated_by}">${p.last_updated_by.split('@')[0]}</div>` : "";
+
           let projCells = `
             <td>
-              <span style="font-weight:600; color:var(--accent); cursor:pointer;" onclick="editProjectBudget(${p.id}, '${p.erp_number}', ${p.budget_cost})">
-                ${p.name}
-              </span>
+              <div style="display:flex; flex-direction:column; gap:0.25rem;">
+                <span style="font-weight:600; color:var(--accent); cursor:pointer;" onclick="editProjectBudget(${p.id}, '${p.erp_number}', ${p.budget_cost})">
+                  ${p.name}
+                </span>
+                <div style="display:flex; align-items:center; gap:0.35rem; margin-top:0.15rem;">
+                  <button class="btn btn-sm" onclick="downloadTemplateForProject(${p.id})" title="Download MS Project XML Template (${p.erp_number})" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
+                    <i class="fa-solid fa-download"></i> .XML
+                  </button>
+                  <button class="btn btn-sm btn-secondary" onclick="openUploadScheduleModal(${p.id})" title="Upload .mpp / .xml for ${p.erp_number}" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
+                    <i class="fa-solid fa-upload"></i> Upload
+                  </button>
+                  <button class="btn btn-sm btn-secondary" onclick="openRefreshWizard(${p.id})" title="Refresh rates/holidays for ${p.erp_number}" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
+                    <i class="fa-solid fa-arrows-rotate"></i> Refresh
+                  </button>
+                </div>
+              </div>
             </td>
             <td class="text-center">${p.percent_complete}%</td>
             <td class="text-center">${p.percent_work_complete}%</td>
@@ -613,6 +629,10 @@
             <td class="text-right currency" style="font-weight:600; cursor:pointer;" onclick="editProjectBudget(${p.id}, '${p.erp_number}', ${p.budget_cost})" title="Click to edit budget">
               €${formatNumber(p.budget_cost)}
             </td>
+            <td class="text-center" style="font-size:0.8rem; white-space:nowrap;">
+              <div>${lastUpDate}</div>
+              ${lastUpUser}
+            </td>
           `;
 
           // Stage Status Cells (Clickable toggles: Done -> Not Done -> N/A)
@@ -625,21 +645,6 @@
               </td>
             `;
           });
-
-          // Action column
-          projCells += `
-            <td class="text-center" style="white-space:nowrap;">
-              <button class="btn btn-sm" onclick="downloadTemplateForProject(${p.id})" title="Download MS Project XML Template" style="margin-right:0.25rem;">
-                <i class="fa-solid fa-download"></i> .XML
-              </button>
-              <button class="btn btn-sm btn-secondary" onclick="openUploadScheduleModal(${p.id})" title="Upload active .mpp / .xml schedule to refresh portfolio" style="margin-right:0.25rem;">
-                <i class="fa-solid fa-upload"></i> Upload
-              </button>
-              <button class="btn btn-sm btn-secondary" onclick="openRefreshWizard(${p.id})" title="Refresh file (rates, holidays, generic replacements)">
-                <i class="fa-solid fa-arrows-rotate"></i> Refresh
-              </button>
-            </td>
-          `;
 
           trProj.innerHTML = projCells;
           tbody.appendChild(trProj);

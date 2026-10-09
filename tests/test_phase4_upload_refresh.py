@@ -128,3 +128,33 @@ def test_refresh_template_with_resource_swap(client):
 
     res_names = [r.find("ms:Name", ns).text for r in ref_root.findall(".//ms:Resource", ns) if r.find("ms:Name", ns) is not None]
     assert "Tomas Petraitis" in res_names
+
+
+def test_upload_schedule_rejects_mismatched_project(client):
+    # Download template for Project 1 (ERP: 26-0537)
+    t_resp = client.get("/api/projects/1/template/xml")
+    assert t_resp.status_code == 200
+
+    # Try uploading Project 1 schedule to Project 2 (ERP: 26-0608)
+    files = {"file": ("schedule_update.xml", t_resp.content, "application/xml")}
+    bad_resp = client.post("/api/projects/2/upload-schedule", files=files)
+    assert bad_resp.status_code == 400
+    assert "Project mismatch" in bad_resp.json()["detail"] or "verification error" in bad_resp.json()["detail"]
+
+
+def test_portfolio_contains_last_updated_metadata(client):
+    port_resp = client.get("/api/portfolio")
+    assert port_resp.status_code == 200
+    portfolio = port_resp.json()
+
+    p1 = None
+    for group in portfolio["groups"]:
+        for p in group["projects"]:
+            if p["id"] == 1:
+                p1 = p
+                break
+    assert p1 is not None
+    assert "last_updated_by" in p1
+    assert "last_updated_at" in p1
+    assert p1["last_updated_by"] is not None
+

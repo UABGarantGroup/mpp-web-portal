@@ -212,6 +212,8 @@ class ProjectDB(Base):
     budget_cost = Column(Float, default=0.0, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    last_updated_by = Column(String(255), nullable=True)  # User email/name who last updated schedule or project
+    last_updated_at = Column(DateTime, nullable=True)     # Timestamp of last update / schedule upload
 
     stage_statuses = relationship("ProjectStageStatusDB", back_populates="project", cascade="all, delete-orphan")
     snapshots = relationship("ProjectSnapshotDB", back_populates="project", cascade="all, delete-orphan", order_by="desc(ProjectSnapshotDB.recorded_at)")
