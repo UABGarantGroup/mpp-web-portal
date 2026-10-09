@@ -809,6 +809,7 @@ def update_project_budget(
     return {"project_id": proj.id, "budget_cost": proj.budget_cost, "updated_by": user.email}
 
 
+@router.get("/api/projects/{project_id}/template/xml", tags=["Projects"])
 @router.post("/api/projects/{project_id}/template/xml", tags=["Projects"])
 def export_project_template_by_id(project_id: int, db: Session = Depends(get_db)):
     proj = db.query(ProjectDB).filter(ProjectDB.id == project_id).first()

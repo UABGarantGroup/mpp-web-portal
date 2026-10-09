@@ -696,8 +696,43 @@
       }
     }
 
-    function downloadTemplateForProject(projectId) {
-      window.location.href = `/api/projects/${projectId}/template/xml`;
+    async function downloadTemplateForProject(projectId) {
+      try {
+        const resp = await fetch(`/api/projects/${projectId}/template/xml`, {
+          method: "GET",
+          headers: getAuthHeaders()
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ detail: "Failed to download template" }));
+          alert("Export error: " + (err.detail || resp.statusText));
+          return;
+        }
+        const blob = await resp.blob();
+        if (blob.size === 0) {
+          alert("Export error: Generated XML file is empty.");
+          return;
+        }
+        // Extract filename from Content-Disposition if present
+        let filename = `project_${projectId}_template.xml`;
+        const disp = resp.headers.get("Content-Disposition");
+        if (disp && disp.includes("filename=")) {
+          const match = disp.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+          if (match && match[1]) {
+            filename = match[1].replace(/['"]/g, '');
+          }
+        }
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+      } catch (e) {
+        console.error("Download template error:", e);
+        alert("Failed to download template: " + e.message);
+      }
     }
 
     // --- BUDGET MODAL ---
