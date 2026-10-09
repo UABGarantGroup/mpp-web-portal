@@ -434,6 +434,8 @@
         <button class="btn" onclick="submitEditCalendarName()"><i class="fa-solid fa-floppy-disk"></i> Save Name</button>
       </div>
     </div>
+  </div>
+
   <!-- Upload Schedule Modal (Phase 4) -->
   <div id="upload-schedule-modal" class="modal-overlay" style="display: none;">
     <div class="modal-content" style="max-width: 540px;">
@@ -630,10 +632,10 @@
               <button class="btn btn-sm" onclick="downloadTemplateForProject(${p.id})" title="Download MS Project XML Template" style="margin-right:0.25rem;">
                 <i class="fa-solid fa-download"></i> .XML
               </button>
-              <button class="btn btn-sm btn-secondary" onclick="openUploadScheduleModal(${p.id}, '${p.erp_number}', '${p.name.replace(/'/g, "\\'")}')" title="Upload active .mpp / .xml schedule to refresh portfolio" style="margin-right:0.25rem;">
+              <button class="btn btn-sm btn-secondary" onclick="openUploadScheduleModal(${p.id})" title="Upload active .mpp / .xml schedule to refresh portfolio" style="margin-right:0.25rem;">
                 <i class="fa-solid fa-upload"></i> Upload
               </button>
-              <button class="btn btn-sm btn-secondary" onclick="openRefreshWizard(${p.id}, '${p.erp_number}', '${p.name.replace(/'/g, "\\'")}')" title="Refresh file (rates, holidays, generic replacements)">
+              <button class="btn btn-sm btn-secondary" onclick="openRefreshWizard(${p.id})" title="Refresh file (rates, holidays, generic replacements)">
                 <i class="fa-solid fa-arrows-rotate"></i> Refresh
               </button>
             </td>
@@ -825,9 +827,16 @@
 
     // --- SCHEDULE UPLOAD & REFRESH WIZARD (Phase 4) ---
 
-    function openUploadScheduleModal(projectId, erpNumber, projectName) {
+    function openUploadScheduleModal(projectId) {
+      let erp = "";
+      if (portfolioData && portfolioData.groups) {
+        for (const g of portfolioData.groups) {
+          const found = g.projects.find(p => p.id === projectId);
+          if (found) { erp = found.erp_number; break; }
+        }
+      }
       document.getElementById("upload-schedule-project-id").value = projectId;
-      document.getElementById("upload-schedule-modal-title").innerHTML = `<i class="fa-solid fa-file-arrow-up" style="color:var(--primary);"></i> Upload Schedule: ${erpNumber}`;
+      document.getElementById("upload-schedule-modal-title").innerHTML = `<i class="fa-solid fa-file-arrow-up" style="color:var(--primary);"></i> Upload Schedule: ${erp || '#' + projectId}`;
       document.getElementById("upload-schedule-file").value = "";
       const statusEl = document.getElementById("upload-schedule-status");
       statusEl.style.display = "none";
@@ -895,9 +904,16 @@
       }
     }
 
-    async function openRefreshWizard(projectId, erpNumber, projectName) {
+    async function openRefreshWizard(projectId) {
+      let erp = "";
+      if (portfolioData && portfolioData.groups) {
+        for (const g of portfolioData.groups) {
+          const found = g.projects.find(p => p.id === projectId);
+          if (found) { erp = found.erp_number; break; }
+        }
+      }
       document.getElementById("refresh-wizard-project-id").value = projectId;
-      document.getElementById("refresh-wizard-title").innerHTML = `<i class="fa-solid fa-arrows-rotate" style="color:var(--accent);"></i> Refresh Schedule: ${erpNumber}`;
+      document.getElementById("refresh-wizard-title").innerHTML = `<i class="fa-solid fa-arrows-rotate" style="color:var(--accent);"></i> Refresh Schedule: ${erp || '#' + projectId}`;
       
       const swapContainer = document.getElementById("generic-swap-list");
       swapContainer.innerHTML = `<div style="font-size:0.85rem;color:var(--text-muted);"><i class="fa-solid fa-spinner fa-spin"></i> Checking project team and generic placeholders...</div>`;
