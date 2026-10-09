@@ -21,6 +21,14 @@ async def lifespan(app: FastAPI):
         init_db(db)
     finally:
         db.close()
+
+    # Pre-initialize MPXJ / Java runtime in headless mode
+    try:
+        from backend.app.services.mpxj_parser import _init_mpxj
+        _init_mpxj()
+    except Exception as e:
+        print("MPXJ pre-initialization warning:", e)
+
     yield
     # Shutdown logic if needed
 

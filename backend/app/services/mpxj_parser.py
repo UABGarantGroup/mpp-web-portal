@@ -44,6 +44,11 @@ def _init_mpxj():
         if os.path.exists(jvm_path):
             # Ensure the directory containing awt.dll and dependent DLLs (e.g. jbr/bin) is on PATH
             jvm_bin_dir = os.path.abspath(os.path.join(os.path.dirname(jvm_path), ".."))
+            if hasattr(os, "add_dll_directory"):
+                try:
+                    os.add_dll_directory(jvm_bin_dir)
+                except Exception:
+                    pass
             if jvm_bin_dir not in os.environ.get("PATH", ""):
                 os.environ["PATH"] = jvm_bin_dir + os.pathsep + os.environ.get("PATH", "")
 
@@ -54,7 +59,7 @@ def _init_mpxj():
                 classpath=jars
             )
             _jvm_initialized = True
-            logger.info("MPXJ JVM started successfully with %s (headless mode)", jvm_path)
+            logger.info("MPXJ JVM started successfully with %s (headless mode, dll dir registered)", jvm_path)
             return True
         else:
             logger.warning("JVM path not found at %s. .mpp parsing unavailable; .xml fallback available.", jvm_path)
