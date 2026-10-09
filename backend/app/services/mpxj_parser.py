@@ -42,15 +42,25 @@ def _init_mpxj():
                     jvm_path = candidate
 
         if os.path.exists(jvm_path):
-            # Ensure the directory containing awt.dll and dependent DLLs (e.g. jbr/bin) is on PATH
+            import ctypes
             jvm_bin_dir = os.path.abspath(os.path.join(os.path.dirname(jvm_path), ".."))
             if hasattr(os, "add_dll_directory"):
                 try:
                     os.add_dll_directory(jvm_bin_dir)
+                    os.add_dll_directory(os.path.dirname(jvm_path))
                 except Exception:
                     pass
             if jvm_bin_dir not in os.environ.get("PATH", ""):
                 os.environ["PATH"] = jvm_bin_dir + os.pathsep + os.environ.get("PATH", "")
+
+            # Preload Java native binaries directly into process memory to guarantee AWT / Color availability
+            for dll_name in [jvm_path, "java.dll", "verify.dll", "awt.dll"]:
+                try:
+                    dll_target = dll_name if os.path.isabs(dll_name) else os.path.join(jvm_bin_dir, dll_name)
+                    if os.path.exists(dll_target):
+                        ctypes.CDLL(dll_target)
+                except Exception as e:
+                    logger.debug("Preload dll %s notice: %s", dll_name, e)
 
             jpype.startJVM(
                 jvm_path,
@@ -59,7 +69,7 @@ def _init_mpxj():
                 classpath=jars
             )
             _jvm_initialized = True
-            logger.info("MPXJ JVM started successfully with %s (headless mode, dll dir registered)", jvm_path)
+            logger.info("MPXJ JVM started successfully with %s (headless mode, native DLLs loaded)", jvm_path)
             return True
         else:
             logger.warning("JVM path not found at %s. .mpp parsing unavailable; .xml fallback available.", jvm_path)
