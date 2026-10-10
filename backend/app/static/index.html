@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MS Project Centralized Resource & Template Hub</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
   <style>
     :root {
       --primary: #107c41; /* Microsoft Excel/Project Green */
@@ -110,14 +111,37 @@
         <div style="font-size: 0.75rem; color: var(--text-muted);">Enterprise Resource Directory • Rates A–E • Project Center Portfolio</div>
       </div>
     </div>
-    <div class="role-badge-box">
-      <span>Active Role:</span>
-      <select id="role-selector" class="role-select" onchange="changeRole()">
-        <option value="Admin">Admin (Full Access)</option>
-        <option value="FinanceManager">Project Finance Manager</option>
-        <option value="PM">Project Manager (PM)</option>
-        <option value="ResourceManager">Resource Manager</option>
-      </select>
+    <div style="display: flex; align-items: center; gap: 0.75rem;">
+      <!-- Entra ID SSO User Card (Shown when signed in) -->
+      <div id="auth-user-card" style="display: none; align-items: center; gap: 0.6rem; background: #ffffff; padding: 0.35rem 0.75rem; border-radius: 4px; border: 1px solid #d2d0ce; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">
+        <i class="fa-solid fa-circle-user" style="font-size: 1.35rem; color: var(--primary);"></i>
+        <div style="line-height: 1.25;">
+          <div id="auth-display-name" style="font-size: 0.85rem; font-weight: 600; color: #323130;">User</div>
+          <div style="display: flex; align-items: center; gap: 0.35rem;">
+            <span id="auth-role-badge" class="badge" style="background: #e1dfdd; color: #323130; font-size: 0.7rem; padding: 0.1rem 0.35rem;">Role</span>
+            <span id="auth-email" style="font-size: 0.72rem; color: var(--text-muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
+          </div>
+        </div>
+        <button id="sso-signout-btn" class="btn btn-sm btn-secondary" onclick="signOutEntraSSO()" title="Sign Out from Microsoft Entra ID" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin-left: 0.3rem;">
+          <i class="fa-solid fa-right-from-bracket"></i>
+        </button>
+      </div>
+
+      <!-- Sign In with Microsoft Button (Shown when SSO configured but not signed in) -->
+      <button id="sso-signin-btn" class="btn btn-sm" onclick="signInEntraSSO()" style="display: none; background: #2f2f2f; color: white; border-color: #2f2f2f; font-weight: 600; padding: 0.45rem 0.85rem; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.15);">
+        <i class="fa-brands fa-microsoft" style="color: #00a4ef; margin-right: 0.3rem;"></i> Sign In with Microsoft
+      </button>
+
+      <!-- Dev Role Selector (Active when SSO not yet logged in / offline fallback) -->
+      <div class="role-badge-box" id="dev-role-box">
+        <span>Active Role:</span>
+        <select id="role-selector" class="role-select" onchange="changeRole()">
+          <option value="Admin">Admin (Full Access)</option>
+          <option value="FinanceManager">Project Finance Manager</option>
+          <option value="PM">Project Manager (PM)</option>
+          <option value="ResourceManager">Resource Manager</option>
+        </select>
+      </div>
     </div>
   </header>
 
@@ -136,10 +160,20 @@
 
     <!-- TAB 1: PORTFOLIO VIEW (EXACT PROJECT CENTER REPLICA) -->
     <section id="tab-portfolio">
-      <div class="action-bar">
-        <div class="search-box">
-          <i class="fa-solid fa-magnifying-glass" style="color: #605e5c;"></i>
-          <input type="text" id="portfolio-search" placeholder="Search projects or ERP code..." onkeyup="filterPortfolio()">
+      <div class="action-bar" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+        <div style="display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap;">
+          <div class="search-box">
+            <i class="fa-solid fa-magnifying-glass" style="color: #605e5c;"></i>
+            <input type="text" id="portfolio-search" placeholder="Search projects or ERP code..." onkeyup="filterPortfolio()">
+          </div>
+          <div style="display:flex; align-items:center; gap:0.4rem; background:#ffffff; padding:0.25rem 0.6rem; border-radius:4px; border:1px solid #d2d0ce;">
+            <label style="font-size:0.82rem; font-weight:600; color:#323130; white-space:nowrap;"><i class="fa-solid fa-filter" style="color:var(--accent);"></i> Filter:</label>
+            <select id="portfolio-status-filter" onchange="loadPortfolio()" style="padding:0.25rem 0.5rem; border:none; background:transparent; font-size:0.85rem; font-weight:600; color:#201f1e; cursor:pointer;">
+              <option value="OPEN" selected>🟢 Open Projects (Default)</option>
+              <option value="CLOSED">🔴 Closed Projects Only</option>
+              <option value="ALL">🌐 All Projects (Open & Closed)</option>
+            </select>
+          </div>
         </div>
         <div style="display: flex; gap: 0.5rem;">
           <button class="btn btn-secondary" onclick="loadPortfolio()"><i class="fa-solid fa-rotate"></i> Refresh Grid</button>
@@ -807,27 +841,206 @@
 
     document.getElementById("proj-start-date").value = new Date().toISOString().split("T")[0];
 
+    let ssoAccessToken = null;
+    let currentAuthUser = null;
+    let entraAuthConfig = null;
+    let msalInstance = null;
+
     function changeRole() {
       currentRole = document.getElementById("role-selector").value;
       console.log("Active role changed to:", currentRole);
+      updateTabVisibilityByRole();
       loadPortfolio();
     }
 
     function getAuthHeaders() {
-      return {
-        "X-User-Role": currentRole,
-        "X-User-Email": currentRole === "FinanceManager" ? "finance@enterprise.com" : (currentRole === "PM" ? "domas.krupavicius@enterprise.com" : "admin@enterprise.com")
-      };
+      const headers = {};
+      if (ssoAccessToken) {
+        headers["Authorization"] = `Bearer ${ssoAccessToken}`;
+      } else {
+        headers["X-User-Role"] = currentRole;
+        headers["X-User-Email"] = currentRole === "FinanceManager" ? "finance@enterprise.com" : (currentRole === "PM" ? "domas.krupavicius@garantgroup.eu" : "admin@enterprise.com");
+      }
+      return headers;
+    }
+
+    function updateTabVisibilityByRole() {
+      const isPM = currentRole === "PM";
+      const pmHiddenTabs = ["resources", "calendars", "stages", "users"];
+      
+      pmHiddenTabs.forEach(tabId => {
+        const btn = Array.from(document.querySelectorAll(".tab-btn")).find(b => b.getAttribute("onclick") && b.getAttribute("onclick").includes(`'${tabId}'`));
+        if (btn) {
+          btn.style.display = isPM ? "none" : "inline-flex";
+        }
+      });
+
+      // If PM is currently on a hidden administrative tab, redirect to portfolio
+      const activeBtn = document.querySelector(".tab-btn.active");
+      if (isPM && activeBtn) {
+        const currentActive = activeBtn.getAttribute("onclick");
+        if (pmHiddenTabs.some(t => currentActive && currentActive.includes(`'${t}'`))) {
+          switchTab("portfolio");
+        }
+      }
+    }
+
+    async function initMSALAuth() {
+      try {
+        const resp = await fetch("/api/auth/config");
+        if (resp.ok) {
+          entraAuthConfig = await resp.json();
+        }
+      } catch (e) {
+        console.warn("Could not fetch auth config:", e);
+      }
+
+      if (window.msal && entraAuthConfig && entraAuthConfig.client_id && entraAuthConfig.tenant_id) {
+        const msalConfig = {
+          auth: {
+            clientId: entraAuthConfig.client_id,
+            authority: `https://login.microsoftonline.com/${entraAuthConfig.tenant_id}`,
+            redirectUri: window.location.origin,
+          },
+          cache: {
+            cacheLocation: "sessionStorage",
+            storeAuthStateInCookie: false,
+          }
+        };
+
+        try {
+          msalInstance = new msal.PublicClientApplication(msalConfig);
+          await msalInstance.initialize();
+
+          // Check redirect result
+          const response = await msalInstance.handleRedirectPromise();
+          if (response && response.accessToken) {
+            ssoAccessToken = response.accessToken;
+            await verifyCurrentUserProfile();
+            return;
+          }
+
+          // Check for existing signed-in account in session
+          const accounts = msalInstance.getAllAccounts();
+          if (accounts.length > 0) {
+            try {
+              const silentToken = await msalInstance.acquireTokenSilent({
+                scopes: ["User.Read"],
+                account: accounts[0]
+              });
+              ssoAccessToken = silentToken.accessToken;
+              await verifyCurrentUserProfile();
+              return;
+            } catch (silentErr) {
+              console.log("Silent token acquisition failed:", silentErr);
+            }
+          }
+
+          renderSignInState(false);
+        } catch (initErr) {
+          console.warn("MSAL initialization failed:", initErr);
+          renderSignInState(false);
+        }
+      } else {
+        renderSignInState(false, true);
+        await verifyCurrentUserProfile();
+      }
+    }
+
+    async function signInEntraSSO() {
+      if (!msalInstance) return;
+      try {
+        const loginResponse = await msalInstance.loginPopup({
+          scopes: ["User.Read", "openid", "profile", "email"],
+          prompt: "select_account"
+        });
+        ssoAccessToken = loginResponse.accessToken;
+        await verifyCurrentUserProfile();
+        loadPortfolio();
+        loadPortalUsers();
+      } catch (err) {
+        console.error("SSO Login error:", err);
+        alert("Microsoft Entra ID Login failed: " + (err.message || err));
+      }
+    }
+
+    async function signOutEntraSSO() {
+      if (msalInstance) {
+        const accounts = msalInstance.getAllAccounts();
+        if (accounts.length > 0) {
+          await msalInstance.logoutPopup({ account: accounts[0] });
+        }
+      }
+      ssoAccessToken = null;
+      currentAuthUser = null;
+      renderSignInState(false);
+      window.location.reload();
+    }
+
+    async function verifyCurrentUserProfile() {
+      try {
+        const resp = await fetch("/api/auth/me", { headers: getAuthHeaders() });
+        if (resp.ok) {
+          currentAuthUser = await resp.json();
+          currentRole = currentAuthUser.primary_role || "PM";
+          const selector = document.getElementById("role-selector");
+          if (selector) selector.value = currentRole;
+          renderSignInState(true);
+          updateTabVisibilityByRole();
+        } else if (resp.status === 403) {
+          const err = await resp.json();
+          alert("Access Denied: " + err.detail);
+          renderSignInState(false);
+        }
+      } catch (e) {
+        console.warn("Could not verify auth user:", e);
+      }
+    }
+
+    function renderSignInState(isSignedIn, fallbackMode = false) {
+      const userCard = document.getElementById("auth-user-card");
+      const signInBtn = document.getElementById("sso-signin-btn");
+      const devRoleBox = document.getElementById("dev-role-box");
+      const displayName = document.getElementById("auth-display-name");
+      const roleBadge = document.getElementById("auth-role-badge");
+      const emailSpan = document.getElementById("auth-email");
+
+      if (isSignedIn && currentAuthUser) {
+        if (userCard) userCard.style.display = "flex";
+        if (signInBtn) signInBtn.style.display = "none";
+        if (devRoleBox) devRoleBox.style.display = "none";
+        if (displayName) displayName.textContent = currentAuthUser.display_name || currentAuthUser.username;
+        if (roleBadge) {
+          roleBadge.textContent = currentAuthUser.primary_role;
+          roleBadge.className = `badge ${currentAuthUser.primary_role === 'Admin' ? 'badge-named' : 'badge-generic'}`;
+        }
+        if (emailSpan) emailSpan.textContent = currentAuthUser.email;
+      } else {
+        if (userCard) userCard.style.display = "none";
+        if (entraAuthConfig && entraAuthConfig.client_id) {
+          if (signInBtn) signInBtn.style.display = "inline-flex";
+          if (devRoleBox) devRoleBox.style.display = "none";
+        } else {
+          if (signInBtn) signInBtn.style.display = "none";
+          if (devRoleBox) devRoleBox.style.display = "flex";
+        }
+      }
     }
 
     function switchTab(tabId) {
+      // Check least privilege for PM
+      if (currentRole === "PM" && ["resources", "calendars", "stages", "users"].includes(tabId)) {
+        alert("Access restricted: Project Managers only have access to Portfolio Center and Project Templates.");
+        return;
+      }
+
       document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
       document.querySelectorAll("main > section").forEach(s => s.style.display = "none");
 
       const targetTab = document.getElementById(`tab-${tabId}`);
       if (targetTab) targetTab.style.display = "block";
 
-      const btn = Array.from(document.querySelectorAll(".tab-btn")).find(b => b.getAttribute("onclick").includes(tabId));
+      const btn = Array.from(document.querySelectorAll(".tab-btn")).find(b => b.getAttribute("onclick") && b.getAttribute("onclick").includes(tabId));
       if (btn) btn.classList.add("active");
 
       if (tabId === "portfolio") loadPortfolio();
@@ -842,7 +1055,9 @@
 
     async function loadPortfolio() {
       try {
-        const resp = await fetch("/api/portfolio", { headers: getAuthHeaders() });
+        const filterElem = document.getElementById("portfolio-status-filter");
+        const statusVal = filterElem ? filterElem.value : "OPEN";
+        const resp = await fetch(`/api/portfolio?status=${encodeURIComponent(statusVal)}`, { headers: getAuthHeaders() });
         portfolioData = await resp.json();
         stageColumns = portfolioData.stage_columns || [];
         renderPortfolioTable(portfolioData);
@@ -911,13 +1126,24 @@
           const lastUpDate = p.last_updated_at || "--";
           const lastUpUser = p.last_updated_by ? `<div style="font-size:0.75rem; color:var(--text-muted); text-overflow:ellipsis; overflow:hidden; max-width:140px;" title="${p.last_updated_by}">${p.last_updated_by.split('@')[0]}</div>` : "";
 
+          const isClosed = p.status === "CLOSED";
+          const statusBadge = isClosed
+            ? `<span class="badge" style="background:#fde7e9; color:#a80000; font-size:0.7rem; padding:0.1rem 0.35rem; border:1px solid #f8d7da;"><i class="fa-solid fa-lock"></i> CLOSED</span>`
+            : `<span class="badge" style="background:#dff6dd; color:#107c41; font-size:0.7rem; padding:0.1rem 0.35rem; border:1px solid #c3e6cb;"><i class="fa-solid fa-circle-check"></i> OPEN</span>`;
+          const statusActionBtn = isClosed
+            ? `<button class="btn btn-sm btn-secondary" onclick="toggleProjectStatus(${p.id}, 'OPEN')" title="Re-open project ${p.erp_number}" style="padding:0.2rem 0.45rem; font-size:0.75rem;"><i class="fa-solid fa-lock-open"></i> Reopen</button>`
+            : `<button class="btn btn-sm btn-secondary" onclick="toggleProjectStatus(${p.id}, 'CLOSED')" title="Close / Complete project ${p.erp_number}" style="padding:0.2rem 0.45rem; font-size:0.75rem;"><i class="fa-solid fa-lock"></i> Close</button>`;
+
           let projCells = `
             <td>
               <div style="display:flex; flex-direction:column; gap:0.25rem;">
-                <span style="font-weight:600; color:var(--accent); cursor:pointer;" onclick="editProjectBudget(${p.id}, '${p.erp_number}', ${p.budget_cost})">
-                  ${p.name}
-                </span>
-                <div style="display:flex; align-items:center; gap:0.35rem; margin-top:0.15rem;">
+                <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+                  <span style="font-weight:600; color:var(--accent); cursor:pointer;" onclick="editProjectBudget(${p.id}, '${p.erp_number}', ${p.budget_cost})">
+                    ${p.name}
+                  </span>
+                  ${statusBadge}
+                </div>
+                <div style="display:flex; align-items:center; gap:0.35rem; margin-top:0.15rem; flex-wrap:wrap;">
                   <button class="btn btn-sm" onclick="downloadTemplateForProject(${p.id})" title="Download MS Project XML Template (${p.erp_number})" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
                     <i class="fa-solid fa-download"></i> .XML
                   </button>
@@ -927,6 +1153,7 @@
                   <button class="btn btn-sm btn-secondary" onclick="openRefreshWizard(${p.id})" title="Refresh rates/holidays for ${p.erp_number}" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
                     <i class="fa-solid fa-arrows-rotate"></i> Refresh
                   </button>
+                  ${statusActionBtn}
                 </div>
               </div>
             </td>
@@ -996,6 +1223,27 @@
         loadPortfolio();
       } catch (e) {
         console.error("Error cycling status:", e);
+      }
+    }
+
+    async function toggleProjectStatus(projectId, newStatus) {
+      const verb = newStatus === 'CLOSED' ? 'close' : 're-open';
+      if (!confirm(`Are you sure you want to ${verb} this project?`)) return;
+      try {
+        const resp = await fetch(`/api/projects/${projectId}/status`, {
+          method: "PATCH",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ status: newStatus })
+        });
+        if (resp.ok) {
+          loadPortfolio();
+        } else {
+          const err = await resp.json();
+          alert("Permission denied or error: " + (err.detail || "Cannot update project status"));
+        }
+      } catch (e) {
+        console.error("Error updating project status:", e);
+        alert("Failed to update status: " + e.message);
       }
     }
 
@@ -2521,8 +2769,11 @@
       }
     }
 
-    // Init
-    loadPortfolio();
+    // Init: Initialize MSAL SSO, then load portfolio
+    (async function initApp() {
+      await initMSALAuth();
+      await loadPortfolio();
+    })();
   </script>
 </body>
 </html>

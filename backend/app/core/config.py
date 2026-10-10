@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     AZURE_AD_CLIENT_ID: str = ""
     AZURE_AD_TENANT_ID: str = ""
     AZURE_AD_CLIENT_SECRET: str = ""
+    INITIAL_ADMIN_EMAIL: str = ""  # Bootstrap admin user from Entra ID
     AUTH_ENABLED: bool = False  # Enabled in production; allows development bypass
 
     # JVM & MPXJ (for .mpp reading)

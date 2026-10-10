@@ -504,8 +504,24 @@ def init_db(db: Session) -> None:
                     source="EMAIL",
                 ),
             ]
-            for u in initial_users:
-                db.add(u)
+        # Ensure INITIAL_ADMIN_EMAIL is provisioned as Admin if configured
+        from backend.app.core.config import settings
+        if settings.INITIAL_ADMIN_EMAIL:
+            admin_email = settings.INITIAL_ADMIN_EMAIL.strip().lower()
+            existing_admin = db.query(PortalUserDB).filter(PortalUserDB.email.ilike(admin_email)).first()
+            if not existing_admin:
+                prefix = admin_email.split("@")[0].replace(".", " ").title()
+                new_admin = PortalUserDB(
+                    email=admin_email,
+                    display_name=f"{prefix} (Admin)",
+                    role="Admin",
+                    is_active=True,
+                    source="INITIAL_SETUP",
+                )
+                db.add(new_admin)
+            else:
+                existing_admin.role = "Admin"
+                existing_admin.is_active = True
 
         db.commit()
 

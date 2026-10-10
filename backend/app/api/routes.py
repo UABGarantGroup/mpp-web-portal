@@ -8,6 +8,7 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 import urllib.parse
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from backend.app.core.auth import CurrentUser, get_current_user, require_roles
@@ -70,6 +71,35 @@ router = APIRouter()
 @router.get("/health", tags=["System"])
 def health_check():
     return {"status": "healthy", "service": "mpp-template-engine", "version": "1.0.0"}
+
+
+# --- Auth & SSO Profile Endpoints ---
+
+@router.get("/api/auth/config", tags=["Auth"])
+def get_auth_config():
+    """Returns SSO client configuration (tenant ID, client ID) for MSAL.js frontend authentication."""
+    return {
+        "auth_enabled": settings.AUTH_ENABLED,
+        "tenant_id": settings.AZURE_AD_TENANT_ID or None,
+        "client_id": settings.AZURE_AD_CLIENT_ID or None,
+        "initial_admin_configured": bool(settings.INITIAL_ADMIN_EMAIL),
+    }
+
+
+@router.get("/api/auth/me", tags=["Auth"])
+def get_current_user_profile(user: CurrentUser = Depends(get_current_user)):
+    """Returns profile and role of currently authenticated user."""
+    return {
+        "authenticated": True,
+        "username": user.username,
+        "email": user.email,
+        "display_name": user.display_name or user.username,
+        "roles": user.roles,
+        "primary_role": user.roles[0] if user.roles else "Viewer",
+        "is_admin": "Admin" in user.roles,
+        "is_pm": "PM" in user.roles,
+    }
+
 
 
 # --- Calendars & Holidays Endpoints ---
@@ -641,11 +671,25 @@ from backend.app.services.mpxj_parser import parse_project_file
 def list_projects(
     owner: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    status: Optional[str] = Query("OPEN"),
+    user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     query = db.query(ProjectDB)
-    if owner:
+
+    # Least privilege: PM can only see their own projects
+    if "PM" in user.roles and not user.has_any_role(["Admin", "FinanceManager", "ResourceManager"]):
+        owner_filters = [ProjectDB.owner.ilike(f"%{user.email}%"), ProjectDB.owner.ilike(f"%{user.username}%")]
+        if user.display_name:
+            owner_filters.append(ProjectDB.owner.ilike(f"%{user.display_name}%"))
+        query = query.filter(or_(*owner_filters))
+    elif owner:
         query = query.filter(ProjectDB.owner.ilike(f"%{owner}%"))
+
+    # Status filter: default is OPEN
+    if status and status.upper() != "ALL":
+        query = query.filter(ProjectDB.status == status.upper())
+
     if search:
         query = query.filter(
             (ProjectDB.name.ilike(f"%{search}%")) | (ProjectDB.erp_number.ilike(f"%{search}%"))
@@ -659,6 +703,7 @@ def list_projects(
             "erp_number": p.erp_number,
             "name": p.name,
             "owner": p.owner,
+            "status": p.status or "OPEN",
             "start_date": p.start_date,
             "calendar_id": p.calendar_id,
             "budget_cost": p.budget_cost,
@@ -996,20 +1041,42 @@ def update_project_stage_status(
 # --- Portfolio View Aggregation (Phase 3) ---
 
 @router.get("/api/portfolio", tags=["Portfolio"])
-def get_portfolio_view(db: Session = Depends(get_db)):
+def get_portfolio_view(
+    status: Optional[str] = Query("OPEN"),
+    owner: Optional[str] = Query(None),
+    user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """
     Returns enterprise project center view grouped by Owner (PM).
     Matches the exact layout of the MS Project Online portfolio center.
+    Default filter: OPEN projects only.
+    Least privilege: PM can only view their own projects.
     """
     active_stages = db.query(StageDefinitionDB).filter(StageDefinitionDB.is_active == True).order_by(StageDefinitionDB.sort_order).all()
     stage_columns = [{"id": s.id, "name": s.name, "code": s.code} for s in active_stages]
 
-    projects = db.query(ProjectDB).all()
+    query = db.query(ProjectDB)
+
+    # Least privilege: PM can only see their own projects
+    if "PM" in user.roles and not user.has_any_role(["Admin", "FinanceManager", "ResourceManager"]):
+        owner_filters = [ProjectDB.owner.ilike(f"%{user.email}%"), ProjectDB.owner.ilike(f"%{user.username}%")]
+        if user.display_name:
+            owner_filters.append(ProjectDB.owner.ilike(f"%{user.display_name}%"))
+        query = query.filter(or_(*owner_filters))
+    elif owner:
+        query = query.filter(ProjectDB.owner.ilike(f"%{owner}%"))
+
+    # Status filter: default is OPEN
+    if status and status.upper() != "ALL":
+        query = query.filter(ProjectDB.status == status.upper())
+
+    projects = query.all()
 
     # Group projects by Owner
     grouped: Dict[str, List[Dict[str, Any]]] = {}
     for p in projects:
-        owner = p.owner or "Unassigned"
+        p_owner = p.owner or "Unassigned"
         snap = p.snapshots[0] if p.snapshots else None
 
         # Collect stage status values
@@ -1024,6 +1091,7 @@ def get_portfolio_view(db: Session = Depends(get_db)):
             "erp_number": p.erp_number,
             "name": p.name,
             "owner": p.owner,
+            "status": p.status or "OPEN",
             "percent_complete": snap.percent_complete if snap else 0.0,
             "percent_work_complete": snap.percent_work_complete if snap else 0.0,
             "start_date": snap.start_date.isoformat() if (snap and snap.start_date) else (p.start_date.isoformat() if p.start_date else None),
@@ -1039,13 +1107,13 @@ def get_portfolio_view(db: Session = Depends(get_db)):
             "stages": stages_map,
         }
 
-        if owner not in grouped:
-            grouped[owner] = []
-        grouped[owner].append(p_data)
+        if p_owner not in grouped:
+            grouped[p_owner] = []
+        grouped[p_owner].append(p_data)
 
     # Compute group summaries (yellow summary rows from Project Center)
     portfolio_groups = []
-    for owner, p_list in sorted(grouped.items()):
+    for grp_owner, p_list in sorted(grouped.items()):
         total_actual_cost = sum(p["actual_cost"] for p in p_list)
         total_cost = sum(p["cost"] for p in p_list)
         total_baseline_cost = sum(p["baseline_cost"] for p in p_list)
@@ -1058,7 +1126,7 @@ def get_portfolio_view(db: Session = Depends(get_db)):
         latest_finish = max(finishes) if finishes else None
 
         portfolio_groups.append({
-            "owner": owner,
+            "owner": grp_owner,
             "project_count": len(p_list),
             "summary": {
                 "start_date": earliest_start,
@@ -1076,6 +1144,47 @@ def get_portfolio_view(db: Session = Depends(get_db)):
         "stage_columns": stage_columns,
         "groups": portfolio_groups,
     }
+
+
+@router.patch("/api/projects/{project_id}/status", tags=["Projects"])
+def update_project_status(
+    project_id: int,
+    payload: Dict[str, str],
+    user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Updates a project's active status (OPEN / CLOSED).
+    Allowed for Admin or the PM who owns the project.
+    """
+    proj = db.query(ProjectDB).filter(ProjectDB.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if not user.has_any_role(["Admin"]):
+        is_owner = proj.owner and (user.email.lower() in proj.owner.lower() or user.username.lower() in proj.owner.lower())
+        if not is_owner:
+            raise HTTPException(status_code=403, detail="Only an Administrator or the Project Manager owner can update project status")
+
+    new_status = payload.get("status", "OPEN").upper()
+    if new_status not in ["OPEN", "CLOSED"]:
+        raise HTTPException(status_code=400, detail="Status must be either 'OPEN' or 'CLOSED'")
+
+    old_status = proj.status or "OPEN"
+    proj.status = new_status
+    proj.last_updated_by = user.email
+    proj.last_updated_at = datetime.utcnow()
+
+    audit = AuditLogDB(
+        entity_type="PROJECT",
+        entity_id=str(proj.id),
+        action="UPDATE_STATUS",
+        changed_by=user.email,
+        details=f"Project status changed from {old_status} to {new_status}",
+    )
+    db.add(audit)
+    db.commit()
+    return {"id": proj.id, "status": proj.status, "message": f"Project marked as {proj.status}"}
 
 
 # --- Project Schedule Upload & Refresh Endpoints (Phase 4) ---

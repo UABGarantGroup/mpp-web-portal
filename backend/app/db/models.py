@@ -210,6 +210,7 @@ class ProjectDB(Base):
     start_date = Column(Date, nullable=True)
     calendar_id = Column(Integer, ForeignKey("calendars.id"), default=1, nullable=False)
     budget_cost = Column(Float, default=0.0, nullable=False)
+    status = Column(String(32), default="OPEN", nullable=False, index=True)  # OPEN, CLOSED
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     last_updated_by = Column(String(255), nullable=True)  # User email/name who last updated schedule or project
