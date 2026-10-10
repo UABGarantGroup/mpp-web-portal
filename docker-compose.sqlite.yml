@@ -1,0 +1,22 @@
+version: '3.8'
+
+# Lightweight single-container deployment using persistent SQLite database
+# Ideal for internal local server / VM deployment with minimal overhead
+services:
+  portal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mpp-web-portal:latest
+    container_name: mpp-web-portal
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=sqlite:////app/data/mpp_hub.db
+      - ENVIRONMENT=production
+    volumes:
+      - ./data:/app/data
+
