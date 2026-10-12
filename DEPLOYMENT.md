@@ -71,7 +71,7 @@ On your Windows Hyper-V Host, open **PowerShell as Administrator** and run the i
 SSH into your new Ubuntu VM and run the automated installer [`deploy/ubuntu-vm-install.sh`](deploy/ubuntu-vm-install.sh):
 
 ```bash
-git clone https://github.com/vkrasauskas/MPP_web_portal.git /tmp/mpp-setup
+git clone https://github.com/UABGarantGroup/mpp-web-portal.git /tmp/mpp-setup
 sudo bash /tmp/mpp-setup/deploy/ubuntu-vm-install.sh
 ```
 

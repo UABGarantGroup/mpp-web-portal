@@ -9,7 +9,7 @@ set -euo pipefail
 
 APP_DIR="/opt/mpp-portal"
 BACKUP_DIR="/var/backups/mpp-portal"
-REPO_URL="https://github.com/vkrasauskas/MPP_web_portal.git"
+REPO_URL="https://github.com/UABGarantGroup/mpp-web-portal.git"
 
 echo "=================================================================="
 echo " 1. Installing System Packages & Hyper-V Integration Services"
