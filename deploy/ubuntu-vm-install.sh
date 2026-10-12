@@ -51,12 +51,15 @@ fi
 echo "=================================================================="
 echo " 3. Deploying Application Code to ${APP_DIR}"
 echo "=================================================================="
-if [ ! -d "${APP_DIR}/.git" ]; then
-    mkdir -p "${APP_DIR}"
-    git clone "${REPO_URL}" "${APP_DIR}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+mkdir -p "${APP_DIR}"
+if [ "${SOURCE_DIR}" != "${APP_DIR}" ]; then
+    echo "Copying application files from ${SOURCE_DIR} to ${APP_DIR}..."
+    cp -a "${SOURCE_DIR}/." "${APP_DIR}/"
 else
-    cd "${APP_DIR}"
-    git pull origin main
+    echo "Already running inside ${APP_DIR}."
 fi
 
 cd "${APP_DIR}"
