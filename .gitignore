@@ -59,3 +59,5 @@ $RECYCLE.BIN/
 # Temporary outputs
 scratch/
 *.tmp
+*.tar.gz
+
