@@ -9,12 +9,18 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from backend.app.core.config import settings
 
 # Engine configuration: SQLite requires check_same_thread=False
+db_url = settings.DATABASE_URL
 connect_args = {}
-if settings.DATABASE_URL.startswith("sqlite"):
+if db_url.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
+elif db_url.startswith("postgresql+psycopg://"):
+    try:
+        import psycopg  # noqa: F401
+    except ImportError:
+        db_url = db_url.replace("postgresql+psycopg://", "postgresql+psycopg2://", 1)
 
 engine = create_engine(
-    settings.DATABASE_URL,
+    db_url,
     connect_args=connect_args,
     pool_pre_ping=True,
 )
