@@ -43,6 +43,78 @@ def create_emergency_token(username: str) -> str:
     return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
 
 
+def create_sso_session_token(email: str, display_name: str, roles: Optional[List[str]] = None) -> str:
+    """
+    Creates a cryptographically signed HS256 session JWT after the server-side
+    Entra ID OAuth2 code exchange succeeds.
+    """
+    import jwt
+    from datetime import datetime, timedelta, timezone
+
+    payload = {
+        "sub": email.strip().lower(),
+        "email": email.strip().lower(),
+        "preferred_username": email.strip().lower(),
+        "name": display_name,
+        "roles": roles or [],
+        "auth_type": "SSO_SESSION",
+        "exp": datetime.now(timezone.utc) + timedelta(hours=12),
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
+
+
+def _verify_jwt_claims(token: str) -> dict:
+    """
+    Cryptographically verifies a Bearer JWT token:
+    1. Verifies locally-signed HS256 tokens (Emergency Admin & Server-Exchanged Entra SSO Session tokens)
+       using settings.SECRET_KEY.
+    2. Otherwise, verifies RS256 tokens against Microsoft Entra ID JWKS public keys.
+    Unsigned or forged tokens are strictly rejected.
+    """
+    import jwt
+
+    # 1. Try locally-signed HS256 token (Emergency Admin, Server-Exchanged SSO Session, or test tokens signed with SECRET_KEY)
+    try:
+        return jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication token has expired. Please sign in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.InvalidTokenError:
+        pass
+
+    # 2. Try Microsoft Entra ID RS256 verification via JWKS if tenant is configured
+    if settings.AZURE_AD_TENANT_ID:
+        tenant_id = settings.AZURE_AD_TENANT_ID.strip()
+        jwks_url = f"https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys"
+        try:
+            jwks_client = jwt.PyJWKClient(jwks_url)
+            signing_key = jwks_client.get_signing_key_from_jwt(token)
+            decode_opts = {"verify_aud": bool(settings.AZURE_AD_CLIENT_ID)}
+            audience = settings.AZURE_AD_CLIENT_ID.strip() if settings.AZURE_AD_CLIENT_ID else None
+            return jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["RS256"],
+                audience=audience,
+                options=decode_opts,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Entra ID JWT signature verification failed: {str(exc)}",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or unverified authentication token signature.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
 def get_current_user(
     authorization: Optional[HTTPAuthorizationCredentials] = Depends(security),
     x_user_role: Optional[str] = Header(None, alias="X-User-Role"),
@@ -53,38 +125,33 @@ def get_current_user(
     Resolves the current authenticated user.
     Supports:
     1. Emergency / Onboarding Admin JWT token (credentials stored in .env)
-    2. Entra ID JWT Bearer token (SSO login with MSAL.js)
+    2. Verified Entra ID SSO Session JWT Bearer token
     3. Least-privilege check: minimum role required to log in is PM
     4. Strict 401 rejection when AUTH_ENABLED=True and no valid Bearer token is provided
     """
     from backend.app.db.models import PortalUserDB
 
-    # 1. Bearer Token Flow (Emergency Admin JWT or Entra ID SSO JWT)
+    # 1. Bearer Token Flow (Emergency Admin JWT or Verified Entra ID SSO JWT)
     if authorization and authorization.credentials:
         token = authorization.credentials
         try:
-            import jwt
+            verified_claims = _verify_jwt_claims(token)
 
             # 1a. Check if token is a locally-signed Emergency Admin token
-            try:
-                verified_local = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
-                if verified_local.get("auth_type") == "EMERGENCY":
-                    uname = verified_local.get("sub") or settings.EMERGENCY_ADMIN_USERNAME
-                    return CurrentUser(
-                        username=uname,
-                        email=uname,
-                        display_name=verified_local.get("name", "Emergency Onboarding Admin"),
-                        roles=["Admin"],
-                    )
-            except Exception:
-                pass
+            if verified_claims.get("auth_type") == "EMERGENCY":
+                uname = verified_claims.get("sub") or settings.EMERGENCY_ADMIN_USERNAME
+                return CurrentUser(
+                    username=uname,
+                    email=uname,
+                    display_name=verified_claims.get("name", "Emergency Onboarding Admin"),
+                    roles=["Admin"],
+                )
 
-            # 1b. Decode Entra ID SSO JWT claims
-            unverified_claims = jwt.decode(token, options={"verify_signature": False})
+            # 1b. Verified Entra ID SSO claims
             email = (
-                unverified_claims.get("preferred_username")
-                or unverified_claims.get("upn")
-                or unverified_claims.get("email")
+                verified_claims.get("preferred_username")
+                or verified_claims.get("upn")
+                or verified_claims.get("email")
                 or ""
             ).strip().lower()
             if not email:
@@ -93,8 +160,8 @@ def get_current_user(
                     detail="Token does not contain a valid user email or UPN claim.",
                 )
 
-            name_claim = unverified_claims.get("name") or email.split("@")[0].replace(".", " ").title()
-            token_roles = unverified_claims.get("roles", [])
+            name_claim = verified_claims.get("name") or email.split("@")[0].replace(".", " ").title()
+            token_roles = verified_claims.get("roles", [])
 
             p_user = db.query(PortalUserDB).filter(PortalUserDB.email.ilike(email)).first()
 

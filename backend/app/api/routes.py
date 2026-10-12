@@ -5,15 +5,23 @@ Enforces RBAC permissions, audit logging, multi-country calendars, and template 
 
 import os
 import secrets
+import time
+from collections import defaultdict
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 import urllib.parse
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from backend.app.core.auth import CurrentUser, create_emergency_token, get_current_user, require_roles
+from backend.app.core.auth import (
+    CurrentUser,
+    create_emergency_token,
+    create_sso_session_token,
+    get_current_user,
+    require_roles,
+)
 from backend.app.core.config import settings
 from backend.app.db.models import (
     AuditLogDB,
@@ -38,6 +46,7 @@ from backend.app.models.enums import (
 from backend.app.models.schemas import (
     CalendarCreate,
     CalendarException,
+    CalendarExceptionCreate,
     CalendarModel,
     CalendarUpdate,
     CalendarWeekdaysUpdate,
@@ -66,6 +75,39 @@ from backend.app.services.xml_generator import build_ms_project_xml
 
 router = APIRouter()
 
+# Brute-force rate limiter state for authentication endpoints (IP -> list of failure timestamps)
+_AUTH_FAILED_ATTEMPTS: Dict[str, List[float]] = defaultdict(list)
+_AUTH_RATE_WINDOW_SECONDS = 300  # 5 minutes
+_AUTH_MAX_FAILED_ATTEMPTS = 8
+
+
+def _get_client_ip(request: Optional[Request]) -> str:
+    if not request:
+        return "unknown"
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_auth_rate_limit(client_ip: str) -> None:
+    now = time.time()
+    recent = [ts for ts in _AUTH_FAILED_ATTEMPTS[client_ip] if now - ts < _AUTH_RATE_WINDOW_SECONDS]
+    _AUTH_FAILED_ATTEMPTS[client_ip] = recent
+    if len(recent) >= _AUTH_MAX_FAILED_ATTEMPTS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed authentication attempts. Please wait 5 minutes before trying again.",
+        )
+
+
+def _record_auth_failure(client_ip: str) -> None:
+    _AUTH_FAILED_ATTEMPTS[client_ip].append(time.time())
+
+
+def _clear_auth_failures(client_ip: str) -> None:
+    _AUTH_FAILED_ATTEMPTS.pop(client_ip, None)
+
 
 class EmergencyLoginRequest(BaseModel):
     username: str
@@ -75,6 +117,10 @@ class EmergencyLoginRequest(BaseModel):
 class SSOExchangeRequest(BaseModel):
     code: str
     redirect_uri: str
+
+
+class ResourceCalendarUpdateRequest(BaseModel):
+    base_calendar_id: int
 
 
 # --- System Endpoints ---
@@ -99,13 +145,20 @@ def get_auth_config():
 
 
 @router.post("/api/auth/sso/exchange", tags=["Auth"])
-def exchange_entra_sso_code(req: SSOExchangeRequest):
+def exchange_entra_sso_code(
+    req: SSOExchangeRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
     """
     Exchanges an Entra ID OAuth2 authorization code for an ID/Access token on the backend server
-    using the confidential client secret. Prevents AADSTS9002326 when the Azure Redirect URI is
-    registered under the 'Web' platform instead of 'Single-Page Application'.
+    using the confidential client secret, then issues a cryptographically signed HS256 session JWT.
     """
     import httpx
+    import jwt
+
+    client_ip = _get_client_ip(request)
+    _check_auth_rate_limit(client_ip)
 
     if not settings.AZURE_AD_TENANT_ID or not settings.AZURE_AD_CLIENT_ID or not settings.AZURE_AD_CLIENT_SECRET:
         raise HTTPException(
@@ -134,22 +187,72 @@ def exchange_entra_sso_code(req: SSOExchangeRequest):
         )
 
     if resp.status_code != 200 or ("id_token" not in token_data and "access_token" not in token_data):
+        _record_auth_failure(client_ip)
         err_desc = token_data.get("error_description") or token_data.get("error") or "Token exchange failed"
+        db.add(
+            AuditLogDB(
+                entity_type="AUTH",
+                entity_id="ENTRA_SSO",
+                action="LOGIN_FAILED",
+                changed_by=client_ip,
+                details=f"Entra SSO code exchange failed from IP {client_ip}: {err_desc[:180]}",
+            )
+        )
+        db.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Entra ID token exchange failed: {err_desc}",
         )
 
-    jwt_token = token_data.get("id_token") or token_data.get("access_token")
+    raw_entra_jwt = token_data.get("id_token") or token_data.get("access_token")
+    # Since raw_entra_jwt was just received directly from Microsoft's TLS token endpoint using our client_secret,
+    # we extract its claims and mint a locally-signed HS256 session JWT so all subsequent API calls verify signature.
+    entra_claims = jwt.decode(raw_entra_jwt, options={"verify_signature": False})
+    email = (
+        entra_claims.get("preferred_username")
+        or entra_claims.get("upn")
+        or entra_claims.get("email")
+        or ""
+    ).strip().lower()
+    if not email:
+        _record_auth_failure(client_ip)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Microsoft Entra ID token did not contain a valid email or UPN claim.",
+        )
+
+    display_name = entra_claims.get("name") or email.split("@")[0].replace(".", " ").title()
+    roles = entra_claims.get("roles", [])
+    signed_session_jwt = create_sso_session_token(email=email, display_name=display_name, roles=roles)
+
+    _clear_auth_failures(client_ip)
+    db.add(
+        AuditLogDB(
+            entity_type="AUTH",
+            entity_id=email,
+            action="LOGIN_SUCCESS",
+            changed_by=email,
+            details=f"Entra ID SSO login succeeded for '{email}' from IP {client_ip}",
+        )
+    )
+    db.commit()
+
     return {
-        "access_token": jwt_token,
+        "access_token": signed_session_jwt,
         "token_type": "bearer",
     }
 
 
 @router.post("/api/auth/emergency-login", tags=["Auth"])
-def emergency_admin_login(req: EmergencyLoginRequest):
+def emergency_admin_login(
+    req: EmergencyLoginRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
     """Authenticates the emergency / onboarding administrator using credentials stored in .env."""
+    client_ip = _get_client_ip(request)
+    _check_auth_rate_limit(client_ip)
+
     if not settings.EMERGENCY_ADMIN_USERNAME or not settings.EMERGENCY_ADMIN_PASSWORD:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -160,13 +263,36 @@ def emergency_admin_login(req: EmergencyLoginRequest):
     pass_match = secrets.compare_digest(req.password, settings.EMERGENCY_ADMIN_PASSWORD)
 
     if not (user_match and pass_match):
+        _record_auth_failure(client_ip)
+        db.add(
+            AuditLogDB(
+                entity_type="AUTH",
+                entity_id=req.username.strip()[:80] or "emergency_admin",
+                action="EMERGENCY_LOGIN_FAILED",
+                changed_by=client_ip,
+                details=f"Failed emergency login attempt for username '{req.username.strip()[:80]}' from IP {client_ip}",
+            )
+        )
+        db.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid emergency username or password.",
         )
 
+    _clear_auth_failures(client_ip)
     uname = settings.EMERGENCY_ADMIN_USERNAME.strip()
     token = create_emergency_token(uname)
+    db.add(
+        AuditLogDB(
+            entity_type="AUTH",
+            entity_id=uname,
+            action="EMERGENCY_LOGIN_SUCCESS",
+            changed_by=uname,
+            details=f"Emergency onboarding admin logged in from IP {client_ip}",
+        )
+    )
+    db.commit()
+
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -202,16 +328,64 @@ def get_current_user_profile(user: CurrentUser = Depends(get_current_user)):
 
 # --- Calendars & Holidays Endpoints ---
 
+def _parse_shift_hours(from_time: str, to_time: str) -> float:
+    try:
+        p1 = [int(x) for x in from_time.split(":")]
+        p2 = [int(x) for x in to_time.split(":")]
+        diff = (p2[0] + p2[1] / 60.0) - (p1[0] + p1[1] / 60.0)
+        return max(0.0, diff)
+    except Exception:
+        return 0.0
+
+
+def _derive_metrics_from_weekdays(weekdays: List[WeekDayModel]) -> tuple[float, float, int]:
+    """Calculates MS Project (hours_per_day, hours_per_week, days_per_month) from a weekday schedule."""
+    working_days_count = 0
+    total_week_hours = 0.0
+    for wd in weekdays:
+        if wd.day_working and wd.working_times:
+            day_h = sum(_parse_shift_hours(s.from_time, s.to_time) for s in wd.working_times)
+            if day_h > 0:
+                working_days_count += 1
+                total_week_hours += day_h
+    if working_days_count <= 0:
+        return 8.0, 40.0, 20
+    h_per_day = round(total_week_hours / working_days_count, 2)
+    h_per_week = round(total_week_hours, 2)
+    if working_days_count == 5:
+        d_per_month = 20
+    elif working_days_count == 6:
+        d_per_month = 24
+    elif working_days_count == 7:
+        d_per_month = 30
+    else:
+        d_per_month = max(1, working_days_count * 4)
+    return h_per_day, h_per_week, d_per_month
+
+
 def map_db_calendar_to_model(c: CalendarDB) -> CalendarModel:
-    exceptions = [
-        CalendarException(
-            name=e.name,
-            from_date=e.from_date,
-            to_date=e.to_date,
-            working=e.working,
+    exceptions = []
+    for e in c.exceptions:
+        wt_list: List[WorkingShiftModel] = []
+        if e.working:
+            s1_from = getattr(e, "shift1_from", None)
+            s1_to = getattr(e, "shift1_to", None)
+            s2_from = getattr(e, "shift2_from", None)
+            s2_to = getattr(e, "shift2_to", None)
+            if s1_from and s1_to:
+                wt_list.append(WorkingShiftModel(from_time=s1_from, to_time=s1_to))
+            if s2_from and s2_to:
+                wt_list.append(WorkingShiftModel(from_time=s2_from, to_time=s2_to))
+        exceptions.append(
+            CalendarException(
+                id=e.id,
+                name=e.name,
+                from_date=e.from_date,
+                to_date=e.to_date,
+                working=e.working,
+                working_times=wt_list,
+            )
         )
-        for e in c.exceptions
-    ]
     weekdays = [
         WeekDayModel(
             day_type=wd.day_type,
@@ -230,6 +404,9 @@ def map_db_calendar_to_model(c: CalendarDB) -> CalendarModel:
         is_base_calendar=c.is_base_calendar,
         base_calendar_uid=c.base_calendar_uid,
         is_active=c.is_active,
+        hours_per_day=getattr(c, "hours_per_day", None) or 8.0,
+        hours_per_week=getattr(c, "hours_per_week", None) or 40.0,
+        days_per_month=getattr(c, "days_per_month", None) or 20,
         weekdays=weekdays,
         exceptions=exceptions,
     )
@@ -282,6 +459,12 @@ def update_calendar(
         cal.country_code = cal_update.country_code.strip()
     if cal_update.is_active is not None:
         cal.is_active = cal_update.is_active
+    if cal_update.hours_per_day is not None and cal_update.hours_per_day > 0:
+        cal.hours_per_day = cal_update.hours_per_day
+    if cal_update.hours_per_week is not None and cal_update.hours_per_week > 0:
+        cal.hours_per_week = cal_update.hours_per_week
+    if cal_update.days_per_month is not None and cal_update.days_per_month > 0:
+        cal.days_per_month = cal_update.days_per_month
 
     db.commit()
     db.refresh(cal)
@@ -310,12 +493,19 @@ def create_calendar(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require_roles(["Admin"])),
 ):
+    h_day, h_week, d_month = 8.0, 40.0, 20
+    if cal_in.weekdays:
+        h_day, h_week, d_month = _derive_metrics_from_weekdays(cal_in.weekdays)
+
     new_cal = CalendarDB(
         name=cal_in.name,
         country_code=cal_in.country_code,
         is_base_calendar=True,
         base_calendar_uid=-1,
         is_active=cal_in.is_active if cal_in.is_active is not None else True,
+        hours_per_day=cal_in.hours_per_day if cal_in.hours_per_day and cal_in.hours_per_day > 0 else h_day,
+        hours_per_week=cal_in.hours_per_week if cal_in.hours_per_week and cal_in.hours_per_week > 0 else h_week,
+        days_per_month=cal_in.days_per_month if cal_in.days_per_month and cal_in.days_per_month > 0 else d_month,
     )
     db.add(new_cal)
     db.flush()
@@ -403,6 +593,78 @@ def update_calendar_weekdays(
                 )
                 db.add(s_db)
 
+    derived_day, derived_week, derived_month = _derive_metrics_from_weekdays(weekdays_in.weekdays)
+    cal.hours_per_day = weekdays_in.hours_per_day if (weekdays_in.hours_per_day and weekdays_in.hours_per_day > 0) else derived_day
+    cal.hours_per_week = weekdays_in.hours_per_week if (weekdays_in.hours_per_week and weekdays_in.hours_per_week > 0) else derived_week
+    cal.days_per_month = weekdays_in.days_per_month if (weekdays_in.days_per_month and weekdays_in.days_per_month > 0) else derived_month
+
+    db.commit()
+    db.refresh(cal)
+    return map_db_calendar_to_model(cal)
+
+
+@router.post("/api/calendars/{calendar_id}/exceptions", response_model=CalendarModel, status_code=status.HTTP_201_CREATED, tags=["Calendars"])
+def add_calendar_exception(
+    calendar_id: int,
+    exc_in: CalendarExceptionCreate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin"])),
+):
+    cal = db.query(CalendarDB).filter(CalendarDB.id == calendar_id).first()
+    if not cal:
+        raise HTTPException(status_code=404, detail="Calendar not found")
+
+    if exc_in.to_date < exc_in.from_date:
+        raise HTTPException(status_code=400, detail="to_date must be greater than or equal to from_date")
+
+    s1_from = s1_to = s2_from = s2_to = None
+    if exc_in.working:
+        shifts = exc_in.working_times or [
+            WorkingShiftModel(from_time="08:00:00", to_time="12:00:00"),
+            WorkingShiftModel(from_time="13:00:00", to_time="17:00:00"),
+        ]
+        if len(shifts) >= 1:
+            s1_from, s1_to = shifts[0].from_time, shifts[0].to_time
+        if len(shifts) >= 2:
+            s2_from, s2_to = shifts[1].from_time, shifts[1].to_time
+
+    exc = CalendarExceptionDB(
+        calendar_id=cal.id,
+        name=exc_in.name.strip(),
+        from_date=exc_in.from_date,
+        to_date=exc_in.to_date,
+        working=exc_in.working,
+        source="MANUAL",
+        shift1_from=s1_from,
+        shift1_to=s1_to,
+        shift2_from=s2_from,
+        shift2_to=s2_to,
+    )
+    db.add(exc)
+    db.commit()
+    db.refresh(cal)
+    return map_db_calendar_to_model(cal)
+
+
+@router.delete("/api/calendars/{calendar_id}/exceptions/{exception_id}", response_model=CalendarModel, tags=["Calendars"])
+def delete_calendar_exception(
+    calendar_id: int,
+    exception_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin"])),
+):
+    cal = db.query(CalendarDB).filter(CalendarDB.id == calendar_id).first()
+    if not cal:
+        raise HTTPException(status_code=404, detail="Calendar not found")
+
+    exc = db.query(CalendarExceptionDB).filter(
+        CalendarExceptionDB.id == exception_id,
+        CalendarExceptionDB.calendar_id == calendar_id,
+    ).first()
+    if not exc:
+        raise HTTPException(status_code=404, detail="Calendar exception not found")
+
+    db.delete(exc)
     db.commit()
     db.refresh(cal)
     return map_db_calendar_to_model(cal)
@@ -460,20 +722,27 @@ def list_resources(
     if kind:
         query = query.filter(ResourceDB.resource_kind == kind)
 
+    # Least privilege: Only Admin, FinanceManager, and ResourceManager can view sensitive Rate Tables A-E via API
+    can_view_rates = user.has_any_role(["Admin", "FinanceManager", "ResourceManager"])
+
     res_dbs = query.all()
     results = []
     for r in res_dbs:
-        rates = [
-            CostRateItem(
-                rate_table=rp.rate_table,
-                standard_rate=rp.standard_rate,
-                overtime_rate=rp.overtime_rate,
-                cost_per_use=rp.cost_per_use,
-                effective_date=rp.effective_date,
-                rates_to=rp.rates_to,
-            )
-            for rp in r.rates
-        ]
+        rates = (
+            [
+                CostRateItem(
+                    rate_table=rp.rate_table,
+                    standard_rate=rp.standard_rate,
+                    overtime_rate=rp.overtime_rate,
+                    cost_per_use=rp.cost_per_use,
+                    effective_date=rp.effective_date,
+                    rates_to=rp.rates_to,
+                )
+                for rp in r.rates
+            ]
+            if can_view_rates
+            else []
+        )
         cf_vals = {fv.custom_field.alias or fv.custom_field.field_name: fv.value for fv in r.field_values if fv.custom_field}
 
         results.append(
@@ -525,6 +794,44 @@ def create_resource(
 
     resource.id = new_res.id
     return resource
+
+
+@router.put("/api/resources/{resource_id}/calendar", response_model=ResourceModel, tags=["Resources"])
+@router.patch("/api/resources/{resource_id}/calendar", response_model=ResourceModel, tags=["Resources"])
+@router.post("/api/resources/{resource_id}/calendar", response_model=ResourceModel, tags=["Resources"])
+def update_resource_calendar(
+    resource_id: int,
+    payload: ResourceCalendarUpdateRequest,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin", "ResourceManager"])),
+):
+    res = db.query(ResourceDB).filter(ResourceDB.id == resource_id).first()
+    if not res:
+        raise HTTPException(status_code=404, detail="Resource not found")
+
+    cal = db.query(CalendarDB).filter(CalendarDB.id == payload.base_calendar_id).first()
+    if not cal:
+        raise HTTPException(status_code=404, detail="Calendar not found")
+
+    res.base_calendar_id = payload.base_calendar_id
+    db.commit()
+    db.refresh(res)
+
+    return ResourceModel(
+        id=res.id,
+        guid=res.guid,
+        ad_upn=res.ad_upn,
+        name=res.name,
+        email=res.email,
+        department=res.department,
+        resource_type=res.resource_type,
+        resource_kind=res.resource_kind,
+        is_generic=res.is_generic,
+        is_active=res.is_active,
+        base_calendar_id=res.base_calendar_id,
+        rates=[],
+        custom_field_values={},
+    )
 
 
 @router.delete("/api/resources/{resource_id}", response_model=ResourceModel, tags=["Resources"])
@@ -661,7 +968,31 @@ def create_custom_field(
     return cf
 
 
-# --- CSV / Excel Import Endpoints ---
+# --- CSV / Excel Import & File Upload Helpers ---
+
+async def _read_and_validate_upload(file: UploadFile, allowed_extensions: tuple[str, ...]) -> bytes:
+    """
+    Validates file extension against an allowlist and reads at most settings.MAX_UPLOAD_SIZE_BYTES
+    to prevent unbounded memory exhaustion (DoS) and arbitrary file uploads.
+    """
+    safe_name = os.path.basename(file.filename or "")
+    ext = os.path.splitext(safe_name.lower())[1]
+    if ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported file extension '{ext}'. Allowed extensions: {', '.join(allowed_extensions)}",
+        )
+    max_bytes = settings.MAX_UPLOAD_SIZE_BYTES
+    content = await file.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Uploaded file exceeds maximum allowed size of {max_bytes // (1024 * 1024)} MB.",
+        )
+    if not content:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty.")
+    return content
+
 
 @router.post("/api/import/resources", tags=["Import"])
 async def import_resources_endpoint(
@@ -670,9 +1001,9 @@ async def import_resources_endpoint(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require_roles(["Admin", "ResourceManager"])),
 ):
-    content = await file.read()
+    content = await _read_and_validate_upload(file, (".csv", ".xlsx", ".xls"))
     try:
-        result = validate_and_import_resources(db, content, file.filename, dry_run=dry_run)
+        result = validate_and_import_resources(db, content, os.path.basename(file.filename or "import.csv"), dry_run=dry_run)
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -685,9 +1016,9 @@ async def import_rates_endpoint(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require_roles(["FinanceManager", "Admin"])),
 ):
-    content = await file.read()
+    content = await _read_and_validate_upload(file, (".csv", ".xlsx", ".xls"))
     try:
-        result = validate_and_import_rates(db, content, file.filename, created_by=user.email, dry_run=dry_run)
+        result = validate_and_import_rates(db, content, os.path.basename(file.filename or "rates.csv"), created_by=user.email, dry_run=dry_run)
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -779,6 +1110,65 @@ from backend.app.models.schemas import (
     ProjectRefreshRequest,
 )
 from backend.app.services.mpxj_parser import parse_project_file
+
+
+def _is_project_owner(proj: ProjectDB, user: CurrentUser) -> bool:
+    """
+    Strictly checks whether the given user is the owner of `proj`.
+    Prevents loose substring false-positives by checking exact email, username, or display_name match.
+    """
+    if not proj.owner:
+        return True
+    owner_norm = proj.owner.strip().lower()
+    candidates = set()
+    if user.email:
+        email_low = user.email.strip().lower()
+        candidates.add(email_low)
+        if "@" in email_low:
+            local_part = email_low.split("@")[0]
+            candidates.add(local_part)
+            candidates.add(local_part.replace(".", " "))
+    if user.username:
+        uname_low = user.username.strip().lower()
+        candidates.add(uname_low)
+        candidates.add(uname_low.replace(".", " "))
+    if user.display_name:
+        candidates.add(user.display_name.strip().lower())
+
+    for c in candidates:
+        if not c:
+            continue
+        if c == owner_norm or f"({c})" in owner_norm or f"<{c}>" in owner_norm or c in owner_norm.split():
+            return True
+        if len(c) >= 4 and c in owner_norm:
+            return True
+    return False
+
+
+def _assert_project_access(
+    proj: ProjectDB,
+    user: CurrentUser,
+    allow_finance: bool = True,
+    allow_rm: bool = True,
+) -> None:
+    """
+    Enforces Object-Level Authorization (IDOR prevention) on project endpoints:
+    A user with only the PM role can only access/modify projects they own.
+    """
+    privileged = ["Admin"]
+    if allow_finance:
+        privileged.append("FinanceManager")
+    if allow_rm:
+        privileged.append("ResourceManager")
+
+    if user.has_any_role(privileged):
+        return
+
+    if not _is_project_owner(proj, user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. Project Managers can only access or modify their own projects.",
+        )
 
 
 @router.get("/api/projects", tags=["Projects"])
@@ -912,6 +1302,8 @@ def get_project_details(
     if not proj:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    _assert_project_access(proj, user)
+
     stages_dict = {
         ss.stage_definition.code: {
             "stage_id": ss.stage_id,
@@ -1000,6 +1392,8 @@ def export_project_template_by_id(
     proj = db.query(ProjectDB).filter(ProjectDB.id == project_id).first()
     if not proj:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    _assert_project_access(proj, user)
 
     team_ids = [tm.resource_id for tm in proj.team_members]
     if not team_ids:
@@ -1113,21 +1507,7 @@ def update_project_stage_status(
         raise HTTPException(status_code=400, detail="This stage is blocked by Admin and cannot be modified.")
 
     # If PM, can only update own projects unless Admin or FinanceManager
-    if "PM" in user.roles and not user.has_any_role(["Admin", "FinanceManager"]):
-        is_owner = False
-        if not proj.owner:
-            is_owner = True
-        else:
-            owner_lower = proj.owner.lower()
-            tokens = [user.email.lower(), user.username.lower()]
-            if "@" in user.email:
-                tokens.append(user.email.split("@")[0].lower())
-            for t in tokens:
-                if t in owner_lower or owner_lower in t:
-                    is_owner = True
-                    break
-        if not is_owner:
-            raise HTTPException(status_code=403, detail="You can only update stages for your own projects.")
+    _assert_project_access(proj, user, allow_finance=True, allow_rm=False)
 
     st_status = db.query(ProjectStageStatusDB).filter(
         ProjectStageStatusDB.project_id == project_id,
@@ -1287,10 +1667,7 @@ def update_project_status(
     if not proj:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if not user.has_any_role(["Admin"]):
-        is_owner = proj.owner and (user.email.lower() in proj.owner.lower() or user.username.lower() in proj.owner.lower())
-        if not is_owner:
-            raise HTTPException(status_code=403, detail="Only an Administrator or the Project Manager owner can update project status")
+    _assert_project_access(proj, user, allow_finance=False, allow_rm=False)
 
     new_status = payload.get("status", "OPEN").upper()
     if new_status not in ["OPEN", "CLOSED"]:
@@ -1326,12 +1703,12 @@ async def upload_project_schedule(
     if not proj:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    _assert_project_access(proj, user, allow_finance=False, allow_rm=False)
+
+    content = await _read_and_validate_upload(file, (".mpp", ".xml"))
 
     try:
-        parsed = parse_project_file(content, file.filename)
+        parsed = parse_project_file(content, os.path.basename(file.filename or "schedule.xml"))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to parse project file: {str(e)}")
 
@@ -1351,7 +1728,7 @@ async def upload_project_schedule(
         clean_title = file_title.lower()
         if target_erp not in clean_title and target_erp.replace("-", "") not in clean_title.replace("-", ""):
             # Also check if filename has the ERP number
-            clean_fn = file.filename.lower()
+            clean_fn = (file.filename or "").lower()
             if target_erp not in clean_fn and target_erp.replace("-", "") not in clean_fn.replace("-", ""):
                 # If neither the file properties nor the filename match the project ERP, warn and block
                 raise HTTPException(
@@ -1391,13 +1768,13 @@ async def upload_project_schedule(
         entity_id=str(proj.id),
         action="UPLOAD",
         changed_by=user.email,
-        details=f"Schedule file '{file.filename}' uploaded by {user.email}. % Complete: {parsed['percent_complete']}%, Cost: €{parsed['cost']}",
+        details=f"Schedule file '{os.path.basename(file.filename or '')}' uploaded by {user.email}. % Complete: {parsed['percent_complete']}%, Cost: €{parsed['cost']}",
     )
     db.add(audit)
     db.commit()
 
     return {
-        "message": f"Schedule parsed and portfolio snapshot updated from '{file.filename}'",
+        "message": f"Schedule parsed and portfolio snapshot updated from '{os.path.basename(file.filename or '')}'",
         "project_id": proj.id,
         "project_name": proj.name,
         "erp_number": proj.erp_number,
@@ -1428,6 +1805,8 @@ def refresh_project_template(
     proj = db.query(ProjectDB).filter(ProjectDB.id == project_id).first()
     if not proj:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    _assert_project_access(proj, user, allow_finance=False, allow_rm=False)
 
     # If generic -> named replacements requested, update project team members
     for swap in refresh_req.resource_swaps:
@@ -1466,9 +1845,15 @@ def get_entra_status(user: CurrentUser = Depends(require_roles(["Admin", "Resour
     )
 
 
+def _sanitize_env_value(val: str) -> str:
+    """Strips CR/LF and null bytes to prevent .env newline/variable injection."""
+    return val.replace("\r", "").replace("\n", "").replace("\x00", "").strip()
+
+
 @router.post("/api/entra/config", response_model=EntraStatusResponse, tags=["Entra ID"])
 def save_entra_config(
     cfg: EntraConfigUpdate,
+    db: Session = Depends(get_db),
     user: CurrentUser = Depends(require_roles(["Admin"])),
 ):
     """
@@ -1479,9 +1864,9 @@ def save_entra_config(
     old_cid = settings.AZURE_AD_CLIENT_ID
     old_sec = settings.AZURE_AD_CLIENT_SECRET
 
-    settings.AZURE_AD_TENANT_ID = cfg.tenant_id.strip()
-    settings.AZURE_AD_CLIENT_ID = cfg.client_id.strip()
-    settings.AZURE_AD_CLIENT_SECRET = cfg.client_secret.strip()
+    settings.AZURE_AD_TENANT_ID = _sanitize_env_value(cfg.tenant_id)
+    settings.AZURE_AD_CLIENT_ID = _sanitize_env_value(cfg.client_id)
+    settings.AZURE_AD_CLIENT_SECRET = _sanitize_env_value(cfg.client_secret)
 
     test_res = entra_graph_service.test_connection()
     if not test_res.get("connected"):
@@ -1493,7 +1878,7 @@ def save_entra_config(
             detail=f"Entra ID connection test failed: {test_res.get('message', 'Invalid credentials')}",
         )
 
-    # Persist into .env file
+    # Persist into .env file safely
     env_path = ".env"
     lines = []
     if os.path.exists(env_path):
@@ -1510,6 +1895,17 @@ def save_entra_config(
 
     with open(env_path, "w", encoding="utf-8") as f:
         f.writelines(new_lines)
+
+    db.add(
+        AuditLogDB(
+            entity_type="ENTRA_CONFIG",
+            entity_id=settings.AZURE_AD_TENANT_ID,
+            action="UPDATE",
+            changed_by=user.email,
+            details=f"Entra ID tenant configuration updated by {user.email} (Client ID: {settings.AZURE_AD_CLIENT_ID})",
+        )
+    )
+    db.commit()
 
     return EntraStatusResponse(
         configured=True,

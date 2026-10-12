@@ -33,21 +33,39 @@ async def lifespan(app: FastAPI):
     # Shutdown logic if needed
 
 
+is_prod = settings.ENVIRONMENT.strip().lower() == "production"
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="Enterprise hub for Active Directory resources, multi-tier rate tables, national calendars, and MS Project XML template generation.",
     version=settings.VERSION,
     lifespan=lifespan,
+    docs_url=None if is_prod else "/docs",
+    redoc_url=None if is_prod else "/redoc",
+    openapi_url=None if is_prod else "/openapi.json",
 )
 
-# CORS Middleware configuration
+# CORS Middleware configuration (restricted origins, restricted methods/headers)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-User-Role", "X-User-Email"],
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    if is_prod:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
 
 app.include_router(router)
 

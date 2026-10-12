@@ -16,4 +16,6 @@ mpxj>=16.10.0
 JPype1>=1.5.0
 psycopg2-binary>=2.9.9
 psycopg[binary]>=3.1.0
+PyJWT[crypto]>=2.8.0
+defusedxml>=0.7.1
 

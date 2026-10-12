@@ -59,9 +59,79 @@ def seed_calendar_weekdays(db: Session, calendar_id: int, schedule_type: str = "
     db.commit()
 
 
+def _ensure_schema_columns() -> None:
+    """Safely adds newly introduced columns to existing SQLite or PostgreSQL databases."""
+    from sqlalchemy import inspect, text
+
+    try:
+        inspector = inspect(engine)
+        table_names = inspector.get_table_names()
+
+        if "calendars" in table_names:
+            cal_cols = {c["name"] for c in inspector.get_columns("calendars")}
+            with engine.begin() as conn:
+                if "hours_per_day" not in cal_cols:
+                    conn.execute(text("ALTER TABLE calendars ADD COLUMN hours_per_day FLOAT NOT NULL DEFAULT 8.0"))
+                if "hours_per_week" not in cal_cols:
+                    conn.execute(text("ALTER TABLE calendars ADD COLUMN hours_per_week FLOAT NOT NULL DEFAULT 40.0"))
+                if "days_per_month" not in cal_cols:
+                    conn.execute(text("ALTER TABLE calendars ADD COLUMN days_per_month INTEGER NOT NULL DEFAULT 20"))
+
+        if "calendar_exceptions" in table_names:
+            exc_cols = {c["name"] for c in inspector.get_columns("calendar_exceptions")}
+            with engine.begin() as conn:
+                if "shift1_from" not in exc_cols:
+                    conn.execute(text("ALTER TABLE calendar_exceptions ADD COLUMN shift1_from VARCHAR(8)"))
+                if "shift1_to" not in exc_cols:
+                    conn.execute(text("ALTER TABLE calendar_exceptions ADD COLUMN shift1_to VARCHAR(8)"))
+                if "shift2_from" not in exc_cols:
+                    conn.execute(text("ALTER TABLE calendar_exceptions ADD COLUMN shift2_from VARCHAR(8)"))
+                if "shift2_to" not in exc_cols:
+                    conn.execute(text("ALTER TABLE calendar_exceptions ADD COLUMN shift2_to VARCHAR(8)"))
+
+        if "resources" in table_names:
+            res_cols = {c["name"] for c in inspector.get_columns("resources")}
+            with engine.begin() as conn:
+                if "base_calendar_id" not in res_cols:
+                    conn.execute(text("ALTER TABLE resources ADD COLUMN base_calendar_id INTEGER NOT NULL DEFAULT 1"))
+    except Exception as e:
+        print("Schema column check notice:", e)
+
+
+def _sync_postgres_sequences(db: Session) -> None:
+    """Ensures PostgreSQL SERIAL sequences are aligned with max(id) after explicit ID seeding."""
+    if engine.dialect.name != "postgresql":
+        return
+    from sqlalchemy import text
+
+    tables = [
+        "calendars",
+        "calendar_weekdays",
+        "calendar_working_shifts",
+        "calendar_exceptions",
+        "resources",
+        "rate_periods",
+        "custom_fields",
+        "projects",
+        "stage_definitions",
+        "portal_users",
+    ]
+    for tbl in tables:
+        try:
+            db.execute(
+                text(
+                    f"SELECT setval(pg_get_serial_sequence('{tbl}', 'id'), COALESCE((SELECT MAX(id) FROM {tbl}), 1), true)"
+                )
+            )
+        except Exception:
+            db.rollback()
+    db.commit()
+
+
 def init_db(db: Session) -> None:
-    # Create tables
+    # Create tables and ensure new columns exist on upgraded databases
     Base.metadata.create_all(bind=engine)
+    _ensure_schema_columns()
 
     # 1. Seed Calendars if empty
     if not db.query(CalendarDB).first():
@@ -71,6 +141,9 @@ def init_db(db: Session) -> None:
             country_code="LT",
             is_base_calendar=True,
             base_calendar_uid=-1,
+            hours_per_day=8.0,
+            hours_per_week=40.0,
+            days_per_month=20,
         )
         db.add(cal_lt)
         db.flush()
@@ -95,6 +168,9 @@ def init_db(db: Session) -> None:
             country_code="NO",
             is_base_calendar=True,
             base_calendar_uid=-1,
+            hours_per_day=8.0,
+            hours_per_week=40.0,
+            days_per_month=20,
         )
         db.add(cal_no)
         db.flush()
@@ -111,13 +187,16 @@ def init_db(db: Session) -> None:
             )
             db.add(exc)
 
-        # 3. Afternoon shift calendar (Mon-Sun 13:00-17:00, 4h/day)
+        # 3. Afternoon shift calendar (Mon-Sun 13:00-17:00, 4h/day, 28h/week, 30d/month)
         cal_afternoon = CalendarDB(
             id=3,
             name="Lithuania – Afternoon 28h (Mon-Sun 13:00-17:00)",
             country_code="LT",
             is_base_calendar=True,
             base_calendar_uid=-1,
+            hours_per_day=4.0,
+            hours_per_week=28.0,
+            days_per_month=30,
         )
         db.add(cal_afternoon)
         db.flush()
@@ -144,6 +223,9 @@ def init_db(db: Session) -> None:
             country_code="LT",
             is_base_calendar=True,
             base_calendar_uid=-1,
+            hours_per_day=4.0,
+            hours_per_week=28.0,
+            days_per_month=30,
         )
         db.add(cal_3)
         db.flush()
@@ -158,6 +240,11 @@ def init_db(db: Session) -> None:
                 source="IMPORT",
             )
             db.add(exc)
+        db.commit()
+    elif cal_3.hours_per_day == 8.0 and cal_3.hours_per_week == 40.0:
+        cal_3.hours_per_day = 4.0
+        cal_3.hours_per_week = 28.0
+        cal_3.days_per_month = 30
         db.commit()
 
     # Ensure all calendars have weekdays populated
@@ -524,4 +611,7 @@ def init_db(db: Session) -> None:
                 existing_admin.is_active = True
 
         db.commit()
+
+    _sync_postgres_sequences(db)
+
 

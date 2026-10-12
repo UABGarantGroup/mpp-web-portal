@@ -308,3 +308,97 @@ def test_export_xml_contains_all_active_calendars_and_resources(client):
     for ar_name in active_resource_names:
         assert ar_name in exported_res_names
 
+
+def test_calendar_custom_exceptions_and_working_exception_xml(client):
+    exc_payload = {
+        "name": "Working Saturday Make-up",
+        "from_date": "2026-05-09",
+        "to_date": "2026-05-09",
+        "working": True,
+        "working_times": [
+            {"from_time": "08:00:00", "to_time": "12:00:00"},
+            {"from_time": "13:00:00", "to_time": "16:00:00"},
+        ],
+    }
+    r_add = client.post("/api/calendars/2/exceptions", json=exc_payload)
+    assert r_add.status_code == 201
+    cal_data = r_add.json()
+    added_exc = next((e for e in cal_data["exceptions"] if e["name"] == "Working Saturday Make-up"), None)
+    assert added_exc is not None
+    assert added_exc["working"] is True
+    assert len(added_exc["working_times"]) == 2
+    exc_id = added_exc["id"]
+
+    template_req = {
+        "project_id": 102,
+        "project_guid": "working-exc-guid",
+        "project_erp_number": "26-8899",
+        "project_title": "Working Exception Export Test",
+        "company_name": "Garant Group",
+        "start_date": "2026-05-04",
+        "calendar_id": 2,
+        "selected_resource_ids": [1],
+        "budget_cost": 5000.0,
+        "custom_fields": [],
+        "project_custom_values": {},
+    }
+    resp = client.post("/api/templates/export/xml", json=template_req)
+    assert resp.status_code == 200
+    root = ET.fromstring(resp.text)
+    ns = {"ms": "http://schemas.microsoft.com/project"}
+
+    cal_2 = root.find(".//ms:Calendar[ms:UID='2']", ns)
+    assert cal_2 is not None
+    wk_exc_el = None
+    for exc_el in cal_2.findall(".//ms:Exception", ns):
+        name_el = exc_el.find("ms:Name", ns)
+        if name_el is not None and name_el.text == "Working Saturday Make-up":
+            wk_exc_el = exc_el
+            break
+    assert wk_exc_el is not None
+    assert wk_exc_el.find("ms:DayWorking", ns).text == "1"
+    wtimes = wk_exc_el.findall(".//ms:WorkingTime", ns)
+    assert len(wtimes) == 2
+    assert wtimes[0].find("ms:FromTime", ns).text == "08:00:00"
+    assert wtimes[1].find("ms:ToTime", ns).text == "16:00:00"
+
+    r_del = client.delete(f"/api/calendars/2/exceptions/{exc_id}")
+    assert r_del.status_code == 200
+    remaining = [e for e in r_del.json()["exceptions"] if e.get("id") == exc_id]
+    assert len(remaining) == 0
+
+
+def test_resource_base_calendar_inheritance_and_override(client):
+    r_upd = client.put("/api/resources/2/calendar", json={"base_calendar_id": 2})
+    assert r_upd.status_code == 200
+    assert r_upd.json()["base_calendar_id"] == 2
+
+    template_req = {
+        "project_id": 103,
+        "project_guid": "res-cal-inherit-guid",
+        "project_erp_number": "26-9900",
+        "project_title": "Resource Calendar Inheritance Test",
+        "company_name": "Garant Group",
+        "start_date": "2026-06-01",
+        "calendar_id": 3,
+        "selected_resource_ids": [1, 2],
+        "budget_cost": 12000.0,
+        "custom_fields": [],
+        "project_custom_values": {},
+    }
+    resp = client.post("/api/templates/export/xml", json=template_req)
+    assert resp.status_code == 200
+    root = ET.fromstring(resp.text)
+    ns = {"ms": "http://schemas.microsoft.com/project"}
+
+    res1_cal = root.find(".//ms:Calendar[ms:UID='1001']", ns)
+    assert res1_cal is not None
+    assert res1_cal.find("ms:BaseCalendarUID", ns).text == "3"
+
+    res2_cal = root.find(".//ms:Calendar[ms:UID='1002']", ns)
+    assert res2_cal is not None
+    assert res2_cal.find("ms:BaseCalendarUID", ns).text == "2"
+
+    client.put("/api/resources/2/calendar", json={"base_calendar_id": 1})
+
+

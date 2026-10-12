@@ -25,16 +25,26 @@ class CostRateItem(BaseModel):
     rates_to: Optional[date] = Field(default=None, description="End date for rate validity (RatesTo)")
 
 
+class WorkingShiftModel(BaseModel):
+    from_time: str = Field(..., description="Shift start time e.g. '13:00:00'")
+    to_time: str = Field(..., description="Shift finish time e.g. '17:00:00'")
+
+
 class CalendarException(BaseModel):
+    id: Optional[int] = None
     name: str = Field(..., description="Exception or holiday title, e.g. 'Labour Day'")
     from_date: date
     to_date: date
     working: bool = False
+    working_times: List[WorkingShiftModel] = Field(default_factory=list, description="Working shifts when working=True")
 
 
-class WorkingShiftModel(BaseModel):
-    from_time: str = Field(..., description="Shift start time e.g. '13:00:00'")
-    to_time: str = Field(..., description="Shift finish time e.g. '17:00:00'")
+class CalendarExceptionCreate(BaseModel):
+    name: str
+    from_date: date
+    to_date: Optional[date] = None
+    working: bool = False
+    working_times: List[WorkingShiftModel] = Field(default_factory=list)
 
 
 class WeekDayModel(BaseModel):
@@ -50,6 +60,9 @@ class CalendarModel(BaseModel):
     is_base_calendar: bool = True
     base_calendar_uid: Optional[int] = -1
     is_active: bool = True
+    hours_per_day: float = 8.0
+    hours_per_week: float = 40.0
+    days_per_month: int = 20
     weekdays: List[WeekDayModel] = Field(default_factory=list)
     exceptions: List[CalendarException] = Field(default_factory=list)
 
@@ -58,6 +71,9 @@ class CalendarCreate(BaseModel):
     name: str
     country_code: str = "LT"
     is_active: bool = True
+    hours_per_day: Optional[float] = None
+    hours_per_week: Optional[float] = None
+    days_per_month: Optional[int] = None
     weekdays: Optional[List[WeekDayModel]] = None
 
 
@@ -65,10 +81,16 @@ class CalendarUpdate(BaseModel):
     name: Optional[str] = None
     country_code: Optional[str] = None
     is_active: Optional[bool] = None
+    hours_per_day: Optional[float] = None
+    hours_per_week: Optional[float] = None
+    days_per_month: Optional[int] = None
 
 
 class CalendarWeekdaysUpdate(BaseModel):
     weekdays: List[WeekDayModel]
+    hours_per_day: Optional[float] = None
+    hours_per_week: Optional[float] = None
+    days_per_month: Optional[int] = None
 
 
 class ResourceModel(BaseModel):

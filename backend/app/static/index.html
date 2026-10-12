@@ -288,9 +288,25 @@
           </div>
 
           <div style="margin-top: 1rem;">
-            <label style="font-weight: 600; font-size: 0.9rem;">Assign Resources to Project Team:</label>
-            <div id="project-resource-checkboxes" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0.5rem; margin-top: 0.5rem; max-height: 220px; overflow-y: auto; padding: 0.5rem; border: 1px solid #d2d0ce; border-radius: 4px; background: #faf9f8;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem;">
+              <label style="font-weight: 600; font-size: 0.9rem; margin: 0;">
+                Assign Resources to Project Team:
+                <span id="proj-res-selected-badge" class="badge" style="background: #eff6fc; color: #004578; border: 1px solid #c7e0f4; margin-left: 0.4rem;">0 selected</span>
+              </label>
+              <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                <div style="position: relative;">
+                  <i class="fa-solid fa-magnifying-glass" style="position: absolute; left: 0.55rem; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 0.8rem;"></i>
+                  <input type="text" id="proj-resource-search" placeholder="Find resource by name, dept, email..." oninput="filterProjectTeamResources()" style="padding: 0.32rem 0.6rem 0.32rem 1.8rem; font-size: 0.82rem; border: 1px solid #c8c6c4; border-radius: 4px; width: 250px;">
+                </div>
+                <button type="button" class="btn btn-sm btn-secondary" onclick="toggleVisibleProjectResources(true)" style="padding: 0.28rem 0.55rem; font-size: 0.75rem;">Select Visible</button>
+                <button type="button" class="btn btn-sm btn-secondary" onclick="toggleVisibleProjectResources(false)" style="padding: 0.28rem 0.55rem; font-size: 0.75rem;">Clear Visible</button>
+              </div>
+            </div>
+            <div id="project-resource-checkboxes" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0.5rem; margin-top: 0.35rem; max-height: 250px; overflow-y: auto; padding: 0.6rem; border: 1px solid #d2d0ce; border-radius: 4px; background: #faf9f8;">
               <!-- Resource checkboxes -->
+            </div>
+            <div id="project-resource-no-match" style="display: none; padding: 0.75rem; text-align: center; color: var(--text-muted); font-size: 0.85rem; background: #faf9f8; border: 1px dashed #d2d0ce; border-radius: 4px; margin-top: 0.35rem;">
+              No resources match your search filter.
             </div>
           </div>
 
@@ -307,7 +323,11 @@
       <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
           <h2><i class="fa-solid fa-users" style="color: var(--accent);"></i> Centralized Enterprise Resource Directory</h2>
-          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+            <div style="position: relative;">
+              <i class="fa-solid fa-magnifying-glass" style="position: absolute; left: 0.55rem; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 0.8rem;"></i>
+              <input type="text" id="resource-pool-search" placeholder="Search resource by name..." oninput="filterResourcePoolTable()" style="padding: 0.38rem 0.6rem 0.38rem 1.8rem; font-size: 0.83rem; border: 1px solid #c8c6c4; border-radius: 4px; width: 220px;">
+            </div>
             <button class="btn" onclick="openAddResourceEntraModal()"><i class="fa-solid fa-user-plus"></i> Add Resource from Entra ID</button>
             <button class="btn btn-secondary" onclick="openImportGroupModal('RESOURCES')"><i class="fa-solid fa-users-gear"></i> Import from Security Group</button>
             <button class="btn btn-secondary" onclick="openImportModal('resources')"><i class="fa-solid fa-file-import"></i> Import (Excel/CSV)</button>
@@ -324,6 +344,7 @@
                 <th>Kind</th>
                 <th>Department</th>
                 <th>Email</th>
+                <th>Base Calendar</th>
                 <th>Table A (Internal)</th>
                 <th>Table B (Overtime)</th>
                 <th>Table C (Billable)</th>
@@ -344,7 +365,7 @@
           <div>
             <h2 style="margin:0;"><i class="fa-solid fa-calendar-days" style="color: var(--primary);"></i> National Base Calendars & Working Shift Schedules</h2>
             <div style="font-size:0.82rem; color:var(--text-muted); margin-top:0.25rem;">
-              Enterprise work weeks, shift hours, and holiday sets exported to Microsoft Project desktop.
+              Enterprise work weeks, multi-shift hours, custom exceptions, and MS Project duration conversion rules.
             </div>
           </div>
           <div style="display:flex; align-items:center; gap:0.75rem;">
@@ -505,20 +526,41 @@
 
   <!-- Calendar Schedule Modal -->
   <div id="calendar-schedule-modal" class="modal-overlay" style="display: none;">
-    <div class="modal-content" style="max-width: 680px;">
+    <div class="modal-content" style="max-width: 780px;">
       <div class="modal-header">
-        <h3 id="cal-schedule-title">Edit Calendar Working Hours</h3>
+        <h3 id="cal-schedule-title">Edit Calendar Working Hours & MS Project Options</h3>
         <button style="border:none;background:none;font-size:1.2rem;cursor:pointer;" onclick="closeCalendarScheduleModal()">&times;</button>
       </div>
       <input type="hidden" id="cal-schedule-cal-id">
 
-      <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap;">
+      <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem; flex-wrap: wrap; align-items: center;">
+        <button type="button" class="btn btn-sm btn-secondary" onclick="applyPresetSchedule('mon_fri_8h')"><i class="fa-solid fa-briefcase"></i> Preset: Mon–Fri 8h (08:00–12:00, 13:00–17:00)</button>
         <button type="button" class="btn btn-sm btn-secondary" onclick="applyPresetSchedule('mon_sun_4h')"><i class="fa-solid fa-bolt"></i> Preset: Mon–Sun 4h (13:00–17:00)</button>
-        <button type="button" class="btn btn-sm btn-secondary" onclick="applyPresetSchedule('mon_fri_8h')"><i class="fa-solid fa-briefcase"></i> Preset: Mon–Fri 8h (08:00–17:00)</button>
+        <span style="font-size:0.78rem; color:var(--text-muted); margin-left:auto;">Leave Shift 2 blank if there is no lunch break split.</span>
       </div>
 
-      <div id="weekday-schedule-rows" style="display: flex; flex-direction: column; gap: 0.6rem; max-height: 380px; overflow-y: auto; padding-right: 0.5rem;">
+      <div id="weekday-schedule-rows" style="display: flex; flex-direction: column; gap: 0.45rem; max-height: 340px; overflow-y: auto; padding-right: 0.25rem;">
         <!-- Day rows injected by JS -->
+      </div>
+
+      <div style="margin-top: 1rem; padding: 0.75rem; background: #f3f9fd; border: 1px solid #c7e0f4; border-radius: 4px;">
+        <div style="font-weight: 600; font-size: 0.85rem; color: #004578; margin-bottom: 0.5rem;">
+          <i class="fa-solid fa-sliders"></i> MS Project Schedule Conversion Options (File &rarr; Options &rarr; Schedule)
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem;">
+          <div class="form-group">
+            <label style="font-size: 0.78rem;">Hours per day</label>
+            <input type="number" id="cal-opt-hours-day" step="0.25" min="0.5" max="24" value="8" style="padding: 0.35rem; font-size: 0.85rem;">
+          </div>
+          <div class="form-group">
+            <label style="font-size: 0.78rem;">Hours per week</label>
+            <input type="number" id="cal-opt-hours-week" step="0.5" min="1" max="168" value="40" style="padding: 0.35rem; font-size: 0.85rem;">
+          </div>
+          <div class="form-group">
+            <label style="font-size: 0.78rem;">Days per month</label>
+            <input type="number" id="cal-opt-days-month" step="1" min="1" max="31" value="20" style="padding: 0.35rem; font-size: 0.85rem;">
+          </div>
+        </div>
       </div>
 
       <div class="modal-actions">
@@ -572,6 +614,58 @@
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="closeEditCalendarNameModal()">Cancel</button>
         <button class="btn" onclick="submitEditCalendarName()"><i class="fa-solid fa-floppy-disk"></i> Save Name</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Calendar Exception Modal -->
+  <div id="calendar-exception-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="max-width: 540px;">
+      <div class="modal-header">
+        <h3 id="cal-exc-modal-title"><i class="fa-solid fa-calendar-day" style="color:var(--primary);"></i> Add Calendar Exception</h3>
+        <button style="border:none;background:none;font-size:1.2rem;cursor:pointer;" onclick="closeCalendarExceptionModal()">&times;</button>
+      </div>
+      <input type="hidden" id="cal-exc-cal-id">
+      <div class="form-group" style="margin-bottom: 0.85rem;">
+        <label>Exception Name / Description *</label>
+        <input type="text" id="cal-exc-name" placeholder="e.g. Company Shutdown / Working Saturday" style="padding: 0.45rem;">
+      </div>
+      <div class="form-grid" style="margin-bottom: 0.85rem;">
+        <div class="form-group">
+          <label>From Date *</label>
+          <input type="date" id="cal-exc-from-date" style="padding: 0.45rem;" onchange="if(!document.getElementById('cal-exc-to-date').value) document.getElementById('cal-exc-to-date').value = this.value;">
+        </div>
+        <div class="form-group">
+          <label>To Date *</label>
+          <input type="date" id="cal-exc-to-date" style="padding: 0.45rem;">
+        </div>
+      </div>
+      <div class="form-group" style="margin-bottom: 0.85rem;">
+        <label>Exception Type *</label>
+        <select id="cal-exc-working" onchange="toggleExceptionShiftsBox()" style="padding: 0.45rem;">
+          <option value="false">Non-Working (Holiday / Day Off)</option>
+          <option value="true">Working Exception (Extra Working Day / Custom Hours)</option>
+        </select>
+      </div>
+      <div id="cal-exc-shifts-box" style="display: none; background: #faf9f8; border: 1px solid #edebe9; border-radius: 4px; padding: 0.75rem; margin-bottom: 1rem;">
+        <div style="font-weight: 600; font-size: 0.82rem; margin-bottom: 0.5rem;">Working Exception Shifts:</div>
+        <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.45rem; font-size: 0.82rem;">
+          <span style="width: 55px; font-weight: 600;">Shift 1:</span>
+          <input type="time" id="cal-exc-s1-from" value="08:00" style="padding: 0.25rem;">
+          <span>to</span>
+          <input type="time" id="cal-exc-s1-to" value="12:00" style="padding: 0.25rem;">
+        </div>
+        <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.82rem;">
+          <span style="width: 55px; font-weight: 600;">Shift 2:</span>
+          <input type="time" id="cal-exc-s2-from" value="13:00" style="padding: 0.25rem;">
+          <span>to</span>
+          <input type="time" id="cal-exc-s2-to" value="17:00" style="padding: 0.25rem;">
+          <button type="button" class="btn btn-sm btn-secondary" style="padding:0.15rem 0.4rem; font-size:0.72rem;" onclick="document.getElementById('cal-exc-s2-from').value=''; document.getElementById('cal-exc-s2-to').value='';">Clear S2</button>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeCalendarExceptionModal()">Cancel</button>
+        <button class="btn" onclick="submitCalendarException()"><i class="fa-solid fa-plus"></i> Add Exception</button>
       </div>
     </div>
   </div>
@@ -1200,11 +1294,11 @@
         trGroup.className = "group-row";
         
         let groupCells = `
-          <td><div class="group-title"><i class="fa-solid fa-chevron-down"></i> Owner: ${group.owner} (${group.project_count})</div></td>
+          <td><div class="group-title"><i class="fa-solid fa-chevron-down"></i> Owner: ${escapeHtml(group.owner)} (${group.project_count})</div></td>
           <td class="text-center">--</td>
           <td class="text-center">--</td>
-          <td>${group.summary.start_date || '--'}</td>
-          <td>${group.summary.finish_date || '--'}</td>
+          <td>${escapeHtml(group.summary.start_date || '--')}</td>
+          <td>${escapeHtml(group.summary.finish_date || '--')}</td>
           <td>--</td>
           <td class="text-right currency">€${formatNumber(group.summary.total_actual_cost)}</td>
           <td class="text-right currency">€${formatNumber(group.summary.total_cost)}</td>
@@ -1227,34 +1321,37 @@
           trProj.className = "project-row";
 
           // Format last update display: date + user
-          const lastUpDate = p.last_updated_at || "--";
-          const lastUpUser = p.last_updated_by ? `<div style="font-size:0.75rem; color:var(--text-muted); text-overflow:ellipsis; overflow:hidden; max-width:140px;" title="${p.last_updated_by}">${p.last_updated_by.split('@')[0]}</div>` : "";
+          const lastUpDate = escapeHtml(p.last_updated_at || "--");
+          const lastUpUser = p.last_updated_by ? `<div style="font-size:0.75rem; color:var(--text-muted); text-overflow:ellipsis; overflow:hidden; max-width:140px;" title="${escapeHtml(p.last_updated_by)}">${escapeHtml(p.last_updated_by.split('@')[0])}</div>` : "";
+          const safeErpAttr = escapeQuote(p.erp_number);
+          const safeErpHtml = escapeHtml(p.erp_number);
+          const safeNameHtml = escapeHtml(p.name);
 
           const isClosed = p.status === "CLOSED";
           const statusBadge = isClosed
             ? `<span class="badge" style="background:#fde7e9; color:#a80000; font-size:0.7rem; padding:0.1rem 0.35rem; border:1px solid #f8d7da;"><i class="fa-solid fa-lock"></i> CLOSED</span>`
             : `<span class="badge" style="background:#dff6dd; color:#107c41; font-size:0.7rem; padding:0.1rem 0.35rem; border:1px solid #c3e6cb;"><i class="fa-solid fa-circle-check"></i> OPEN</span>`;
           const statusActionBtn = isClosed
-            ? `<button class="btn btn-sm btn-secondary" onclick="toggleProjectStatus(${p.id}, 'OPEN')" title="Re-open project ${p.erp_number}" style="padding:0.2rem 0.45rem; font-size:0.75rem;"><i class="fa-solid fa-lock-open"></i> Reopen</button>`
-            : `<button class="btn btn-sm btn-secondary" onclick="toggleProjectStatus(${p.id}, 'CLOSED')" title="Close / Complete project ${p.erp_number}" style="padding:0.2rem 0.45rem; font-size:0.75rem;"><i class="fa-solid fa-lock"></i> Close</button>`;
+            ? `<button class="btn btn-sm btn-secondary" onclick="toggleProjectStatus(${p.id}, 'OPEN')" title="Re-open project ${safeErpHtml}" style="padding:0.2rem 0.45rem; font-size:0.75rem;"><i class="fa-solid fa-lock-open"></i> Reopen</button>`
+            : `<button class="btn btn-sm btn-secondary" onclick="toggleProjectStatus(${p.id}, 'CLOSED')" title="Close / Complete project ${safeErpHtml}" style="padding:0.2rem 0.45rem; font-size:0.75rem;"><i class="fa-solid fa-lock"></i> Close</button>`;
 
           let projCells = `
             <td>
               <div style="display:flex; flex-direction:column; gap:0.25rem;">
                 <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
-                  <span style="font-weight:600; color:var(--accent); cursor:pointer;" onclick="editProjectBudget(${p.id}, '${p.erp_number}', ${p.budget_cost})">
-                    ${p.name}
+                  <span style="font-weight:600; color:var(--accent); cursor:pointer;" onclick="editProjectBudget(${p.id}, '${safeErpAttr}', ${p.budget_cost})">
+                    ${safeNameHtml}
                   </span>
                   ${statusBadge}
                 </div>
                 <div style="display:flex; align-items:center; gap:0.35rem; margin-top:0.15rem; flex-wrap:wrap;">
-                  <button class="btn btn-sm" onclick="downloadTemplateForProject(${p.id})" title="Download MS Project XML Template (${p.erp_number})" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
+                  <button class="btn btn-sm" onclick="downloadTemplateForProject(${p.id})" title="Download MS Project XML Template (${safeErpHtml})" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
                     <i class="fa-solid fa-download"></i> .XML
                   </button>
-                  <button class="btn btn-sm btn-secondary" onclick="openUploadScheduleModal(${p.id})" title="Upload .mpp / .xml for ${p.erp_number}" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
+                  <button class="btn btn-sm btn-secondary" onclick="openUploadScheduleModal(${p.id})" title="Upload .mpp / .xml for ${safeErpHtml}" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
                     <i class="fa-solid fa-upload"></i> Upload
                   </button>
-                  <button class="btn btn-sm btn-secondary" onclick="openRefreshWizard(${p.id})" title="Refresh rates/holidays for ${p.erp_number}" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
+                  <button class="btn btn-sm btn-secondary" onclick="openRefreshWizard(${p.id})" title="Refresh rates/holidays for ${safeErpHtml}" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
                     <i class="fa-solid fa-arrows-rotate"></i> Refresh
                   </button>
                   ${statusActionBtn}
@@ -1263,14 +1360,14 @@
             </td>
             <td class="text-center">${p.percent_complete}%</td>
             <td class="text-center">${p.percent_work_complete}%</td>
-            <td>${p.start_date || '--'}</td>
-            <td>${p.finish_date || '--'}</td>
-            <td>${p.baseline_finish || '--'}</td>
+            <td>${escapeHtml(p.start_date || '--')}</td>
+            <td>${escapeHtml(p.finish_date || '--')}</td>
+            <td>${escapeHtml(p.baseline_finish || '--')}</td>
             <td class="text-right currency">€${formatNumber(p.actual_cost)}</td>
             <td class="text-right currency">€${formatNumber(p.cost)}</td>
             <td class="text-right currency">€${formatNumber(p.baseline_cost)}</td>
             <td class="text-right currency">€${formatNumber(p.baseline_budget)}</td>
-            <td class="text-right currency" style="font-weight:600; cursor:pointer;" onclick="editProjectBudget(${p.id}, '${p.erp_number}', ${p.budget_cost})" title="Click to edit budget">
+            <td class="text-right currency" style="font-weight:600; cursor:pointer;" onclick="editProjectBudget(${p.id}, '${safeErpAttr}', ${p.budget_cost})" title="Click to edit budget">
               €${formatNumber(p.budget_cost)}
             </td>
             <td class="text-center" style="font-size:0.8rem; white-space:nowrap;">
@@ -1284,7 +1381,7 @@
             const status = p.stages[stage.code] || "Not done";
             const iconHtml = getStatusIconHtml(status);
             projCells += `
-              <td class="status-cell" onclick="cycleStageStatus(${p.id}, ${stage.id}, '${status}')" title="${stage.name}: ${status}">
+              <td class="status-cell" onclick="cycleStageStatus(${p.id}, ${stage.id}, '${escapeQuote(status)}')" title="${escapeHtml(stage.name)}: ${escapeHtml(status)}">
                 ${iconHtml}
               </td>
             `;
@@ -1370,19 +1467,71 @@
       const calResp = await fetch("/api/calendars?include_inactive=false", { headers: getAuthHeaders() });
       allCalendars = await calResp.json();
       const calSelect = document.getElementById("proj-calendar");
-      calSelect.innerHTML = allCalendars.map(c => `<option value="${c.id}">${c.name}</option>`).join("");
+      calSelect.innerHTML = allCalendars.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("");
+
+      const searchInput = document.getElementById("proj-resource-search");
+      if (searchInput) searchInput.value = "";
+      const noMatchEl = document.getElementById("project-resource-no-match");
+      if (noMatchEl) noMatchEl.style.display = "none";
 
       // Load resources checkboxes
       const resResp = await fetch("/api/resources", { headers: getAuthHeaders() });
       allResources = await resResp.json();
       const resContainer = document.getElementById("project-resource-checkboxes");
-      resContainer.innerHTML = allResources.map(r => `
-        <label style="display:flex;align-items:center;gap:0.5rem;font-size:0.85rem;cursor:pointer;">
-          <input type="checkbox" name="team_res" value="${r.id}" checked>
-          <span><strong>${r.name}</strong> (${r.department || 'General'})</span>
-          ${r.is_generic ? '<span class="badge badge-generic">Generic</span>' : ''}
-        </label>
-      `).join("");
+      resContainer.innerHTML = allResources.map(r => {
+        const searchKey = `${r.name || ''} ${r.department || ''} ${r.email || ''}`.toLowerCase();
+        return `
+          <label class="proj-res-item" data-search="${escapeHtml(searchKey)}" style="display:flex;align-items:center;gap:0.5rem;font-size:0.85rem;cursor:pointer;padding:0.2rem 0.35rem;border-radius:3px;">
+            <input type="checkbox" name="team_res" value="${r.id}" checked onchange="updateProjectSelectedResourceCount()">
+            <span><strong>${escapeHtml(r.name)}</strong> (${escapeHtml(r.department || 'General')})</span>
+            ${r.is_generic ? '<span class="badge badge-generic">Generic</span>' : ''}
+          </label>
+        `;
+      }).join("");
+      updateProjectSelectedResourceCount();
+    }
+
+    function filterProjectTeamResources() {
+      const q = (document.getElementById("proj-resource-search")?.value || "").trim().toLowerCase();
+      const items = document.querySelectorAll("#project-resource-checkboxes .proj-res-item");
+      let visibleCount = 0;
+      items.forEach(item => {
+        const haystack = (item.getAttribute("data-search") || item.textContent || "").toLowerCase();
+        const match = !q || haystack.includes(q);
+        item.style.display = match ? "flex" : "none";
+        if (match) visibleCount++;
+      });
+      const noMatchEl = document.getElementById("project-resource-no-match");
+      if (noMatchEl) {
+        noMatchEl.style.display = (items.length > 0 && visibleCount === 0) ? "block" : "none";
+      }
+    }
+
+    function toggleVisibleProjectResources(checkState) {
+      document.querySelectorAll("#project-resource-checkboxes .proj-res-item").forEach(item => {
+        if (item.style.display !== "none") {
+          const cb = item.querySelector("input[name='team_res']");
+          if (cb) cb.checked = checkState;
+        }
+      });
+      updateProjectSelectedResourceCount();
+    }
+
+    function updateProjectSelectedResourceCount() {
+      const total = document.querySelectorAll("input[name='team_res']").length;
+      const checked = document.querySelectorAll("input[name='team_res']:checked").length;
+      const badge = document.getElementById("proj-res-selected-badge");
+      if (badge) {
+        badge.textContent = `${checked} / ${total} selected`;
+      }
+    }
+
+    function filterResourcePoolTable() {
+      const q = (document.getElementById("resource-pool-search")?.value || "").trim().toLowerCase();
+      document.querySelectorAll("#resources-tbody tr").forEach(row => {
+        const txt = (row.textContent || "").toLowerCase();
+        row.style.display = (!q || txt.includes(q)) ? "" : "none";
+      });
     }
 
     async function handleCreateProject(event) {
@@ -1689,8 +1838,13 @@
     // --- RESOURCES TAB ---
 
     async function loadResources() {
-      const resp = await fetch("/api/resources?include_inactive=true", { headers: getAuthHeaders() });
-      const resources = await resp.json();
+      const [resResp, calResp] = await Promise.all([
+        fetch("/api/resources?include_inactive=true", { headers: getAuthHeaders() }),
+        fetch("/api/calendars?include_inactive=true", { headers: getAuthHeaders() })
+      ]);
+      const resources = await resResp.json();
+      const calendars = await calResp.json();
+      allCalendars = calendars;
       const tbody = document.getElementById("resources-tbody");
       tbody.innerHTML = "";
 
@@ -1699,13 +1853,22 @@
         const rateB = r.rates.find(rp => rp.rate_table === "B");
         const rateC = r.rates.find(rp => rp.rate_table === "C");
 
+        const calOptions = calendars.map(c =>
+          `<option value="${c.id}" ${c.id === (r.base_calendar_id || 1) ? "selected" : ""}>${escapeHtml(c.name)}</option>`
+        ).join("");
+
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td>${r.id}</td>
-          <td><strong>${r.name}</strong></td>
+          <td><strong>${escapeHtml(r.name)}</strong></td>
           <td>${r.is_generic ? '<span class="badge badge-generic">Generic</span>' : '<span class="badge badge-named">Named</span>'}</td>
-          <td>${r.department || '--'}</td>
-          <td>${r.email || '--'}</td>
+          <td>${escapeHtml(r.department || '--')}</td>
+          <td>${escapeHtml(r.email || '--')}</td>
+          <td>
+            <select onchange="updateResourceCalendar(${r.id}, this.value)" style="padding:0.25rem 0.4rem; font-size:0.8rem; border:1px solid #d2d0ce; border-radius:4px; max-width:210px;">
+              ${calOptions}
+            </select>
+          </td>
           <td class="currency">${rateA ? '€' + rateA.standard_rate.toFixed(2) + '/h' : '--'}</td>
           <td class="currency">${rateB ? '€' + rateB.standard_rate.toFixed(2) + '/h' : '--'}</td>
           <td class="currency">${rateC ? '€' + rateC.standard_rate.toFixed(2) + '/h' : '--'}</td>
@@ -1716,6 +1879,24 @@
         `;
         tbody.appendChild(tr);
       });
+      filterResourcePoolTable();
+    }
+
+    async function updateResourceCalendar(resId, calId) {
+      try {
+        const resp = await fetch(`/api/resources/${resId}/calendar`, {
+          method: "PUT",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ base_calendar_id: parseInt(calId) })
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ detail: "Failed to update resource calendar" }));
+          alert("Error: " + (err.detail || "Cannot update resource calendar"));
+          loadResources();
+        }
+      } catch (e) {
+        console.error("Update resource calendar error:", e);
+      }
     }
 
     async function softDeleteResource(resId) {
@@ -1732,8 +1913,6 @@
         console.error(e);
       }
     }
-
-    // --- CALENDARS TAB ---
 
     // --- CALENDARS TAB ---
 
@@ -1757,6 +1936,15 @@
     function escapeQuote(str) {
       if (!str) return "";
       return String(str).replace(/'/g, "\\'").replace(/"/g, "&quot;");
+    }
+
+    function calcShiftHours(fromStr, toStr) {
+      if (!fromStr || !toStr) return 0;
+      const p1 = fromStr.split(":").map(Number);
+      const p2 = toStr.split(":").map(Number);
+      if (p1.length < 2 || p2.length < 2) return 0;
+      const diff = (p2[0] + p2[1] / 60) - (p1[0] + p1[1] / 60);
+      return diff > 0 ? Math.round(diff * 100) / 100 : 0;
     }
 
     async function loadCalendars() {
@@ -1796,10 +1984,30 @@
             </div>`;
           }
           const shiftsText = w.working_times.map(s => `${s.from_time.substring(0,5)}–${s.to_time.substring(0,5)}`).join(", ");
+          const dayHrs = w.working_times.reduce((acc, s) => acc + calcShiftHours(s.from_time, s.to_time), 0);
           return `<div style="display:flex; justify-content:space-between; padding:0.2rem 0; border-bottom:1px solid #f3f2f1;">
-            <span><strong>${name}</strong>:</span> <span style="font-family:monospace; color:#004e8c; font-weight:600;">${shiftsText}</span>
+            <span><strong>${name}</strong> <span style="color:var(--text-muted); font-size:0.75rem;">(${dayHrs}h)</span>:</span>
+            <span style="font-family:monospace; color:#004e8c; font-weight:600;">${shiftsText}</span>
           </div>`;
         }).join("") : `<div style="color:var(--text-muted); font-size:0.85rem;">Standard office: Mon–Fri 08:00–12:00, 13:00–17:00 (40h)</div>`;
+
+        const hDay = c.hours_per_day || 8;
+        const hWk = c.hours_per_week || 40;
+        const dMo = c.days_per_month || 20;
+
+        const exceptionsHtml = (c.exceptions || []).length > 0 ? c.exceptions.map(e => {
+          const dateRange = e.to_date && e.to_date !== e.from_date ? `${e.from_date} &rarr; ${e.to_date}` : `${e.from_date}`;
+          const wkBadge = e.working
+            ? `<span class="badge" style="background:#dff6dd; color:#107c41; font-size:0.68rem;">Working (${(e.working_times || []).map(s => s.from_time.substring(0,5) + '-' + s.to_time.substring(0,5)).join(', ') || 'Custom'})</span>`
+            : `<span class="badge" style="background:#fde7e9; color:#a80000; font-size:0.68rem;">Off</span>`;
+          const delBtn = e.id
+            ? `<button type="button" onclick="deleteCalendarException(${c.id}, ${e.id})" title="Remove exception" style="border:none; background:none; color:#a80000; cursor:pointer; font-weight:bold; font-size:0.9rem; padding:0 0.25rem;">&times;</button>`
+            : ``;
+          return `<div style="display:flex; justify-content:space-between; align-items:center; padding:0.2rem 0; border-bottom:1px solid #f3f2f1; gap:0.35rem;">
+            <div>📅 <strong>${dateRange}</strong>: ${escapeHtml(e.name)} ${wkBadge}</div>
+            ${delBtn}
+          </div>`;
+        }).join("") : `<div style="color:var(--text-muted); font-style:italic;">No exceptions configured.</div>`;
 
         card.innerHTML = `
           <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:0.5rem;">
@@ -1810,14 +2018,16 @@
                   <i class="fa-solid fa-pen"></i>
                 </button>
               </div>
-              <div style="margin-top:0.35rem; display:flex; gap:0.4rem; align-items:center;">
+              <div style="margin-top:0.35rem; display:flex; gap:0.4rem; align-items:center; flex-wrap:wrap;">
                 <span class="badge" style="background:#e1dfdd;">Country: ${c.country_code}</span>
+                <span class="badge" style="background:#eff6fc; color:#004578; border:1px solid #c7e0f4;" title="MS Project Duration Conversion Factors">${hDay}h/day • ${hWk}h/wk • ${dMo}d/mo</span>
                 ${c.is_active ? '<span class="badge" style="background:#dff6dd; color:#107c41;">Active</span>' : '<span class="badge" style="background:#fde7e9; color:#a80000;">Hidden</span>'}
               </div>
             </div>
             <div style="display:flex; gap:0.35rem; flex-wrap:wrap; justify-content:flex-end;">
               <button class="btn btn-sm btn-secondary" onclick="openCalendarScheduleModal(${c.id})"><i class="fa-solid fa-clock"></i> Shifts</button>
-              <button class="btn btn-sm btn-secondary" onclick="importHolidaysForCal(${c.id})"><i class="fa-solid fa-cloud-arrow-down"></i> Sync</button>
+              <button class="btn btn-sm btn-secondary" onclick="openCalendarExceptionModal(${c.id})" title="Add custom holiday or working exception"><i class="fa-solid fa-calendar-plus"></i> + Exception</button>
+              <button class="btn btn-sm btn-secondary" onclick="importHolidaysForCal(${c.id})" title="Sync national holidays"><i class="fa-solid fa-cloud-arrow-down"></i> Sync</button>
               ${c.is_active 
                 ? `<button class="btn btn-sm btn-secondary" title="Hide calendar from project list" onclick="toggleCalendarActive(${c.id})"><i class="fa-solid fa-eye-slash"></i> Hide</button>`
                 : `<button class="btn btn-sm" style="background:#107c41;" title="Unhide calendar" onclick="toggleCalendarActive(${c.id})"><i class="fa-solid fa-eye"></i> Unhide</button>`
@@ -1830,9 +2040,9 @@
             ${scheduleHtml}
           </div>
 
-          <h4 style="margin-top:1rem; font-size:0.85rem; color:#323130;"><i class="fa-solid fa-calendar-check"></i> Holidays & Non-Working Days (${c.exceptions.length}):</h4>
-          <div style="max-height: 140px; overflow-y:auto; margin-top:0.35rem; font-size:0.8rem; border:1px solid #edebe9; border-radius:4px; padding:0.5rem; background:white;">
-            ${c.exceptions.map(e => `<div>📅 <strong>${e.from_date}</strong>: ${escapeHtml(e.name)}</div>`).join("")}
+          <h4 style="margin-top:1rem; font-size:0.85rem; color:#323130;"><i class="fa-solid fa-calendar-check"></i> Calendar Exceptions & Holidays (${c.exceptions.length}):</h4>
+          <div style="max-height: 150px; overflow-y:auto; margin-top:0.35rem; font-size:0.8rem; border:1px solid #edebe9; border-radius:4px; padding:0.5rem; background:white;">
+            ${exceptionsHtml}
           </div>
         `;
         container.appendChild(card);
@@ -1860,7 +2070,9 @@
       const preset = document.getElementById("new-cal-preset").value;
 
       let weekdays = [];
+      let hDay = 8.0, hWeek = 40.0, dMonth = 20;
       if (preset === "mon_sun_4h") {
+        hDay = 4.0; hWeek = 28.0; dMonth = 30;
         for (let d = 1; d <= 7; d++) {
           weekdays.push({ day_type: d, day_working: true, working_times: [{ from_time: "13:00:00", to_time: "17:00:00" }] });
         }
@@ -1879,7 +2091,15 @@
         const resp = await fetch("/api/calendars", {
           method: "POST",
           headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
-          body: JSON.stringify({ name: name, country_code: countryCode, is_active: true, weekdays: weekdays })
+          body: JSON.stringify({
+            name: name,
+            country_code: countryCode,
+            is_active: true,
+            hours_per_day: hDay,
+            hours_per_week: hWeek,
+            days_per_month: dMonth,
+            weekdays: weekdays
+          })
         });
         if (!resp.ok) {
           const err = await resp.json();
@@ -1951,7 +2171,11 @@
       if (!editingCal) return;
 
       document.getElementById("cal-schedule-cal-id").value = calId;
-      document.getElementById("cal-schedule-title").textContent = `Edit Schedule: ${editingCal.name}`;
+      document.getElementById("cal-schedule-title").textContent = `Edit Schedule & Options: ${editingCal.name}`;
+
+      document.getElementById("cal-opt-hours-day").value = editingCal.hours_per_day || 8;
+      document.getElementById("cal-opt-hours-week").value = editingCal.hours_per_week || 40;
+      document.getElementById("cal-opt-days-month").value = editingCal.days_per_month || 20;
 
       const rowsContainer = document.getElementById("weekday-schedule-rows");
       rowsContainer.innerHTML = "";
@@ -1965,38 +2189,93 @@
         const isWorking = existingWd ? existingWd.day_working : dayType !== 1 && dayType !== 7;
         const shifts = (existingWd && existingWd.working_times && existingWd.working_times.length > 0)
           ? existingWd.working_times
-          : (isWorking ? [{ from_time: "08:00:00", to_time: "17:00:00" }] : []);
+          : (isWorking ? [{ from_time: "08:00:00", to_time: "12:00:00" }, { from_time: "13:00:00", to_time: "17:00:00" }] : []);
 
         const shift1From = shifts[0] ? shifts[0].from_time.substring(0, 5) : "08:00";
-        const shift1To = shifts[0] ? shifts[0].to_time.substring(0, 5) : "17:00";
+        const shift1To = shifts[0] ? shifts[0].to_time.substring(0, 5) : "12:00";
+        const shift2From = shifts[1] ? shifts[1].from_time.substring(0, 5) : (isWorking && shifts.length === 0 ? "13:00" : "");
+        const shift2To = shifts[1] ? shifts[1].to_time.substring(0, 5) : (isWorking && shifts.length === 0 ? "17:00" : "");
 
         const row = document.createElement("div");
         row.className = "cal-day-row";
         row.dataset.dayType = dayType;
-        row.style.cssText = "display:flex; align-items:center; justify-content:space-between; padding:0.4rem 0.5rem; border:1px solid #edebe9; border-radius:4px; background:#fff;";
+        row.style.cssText = "display:flex; align-items:center; justify-content:space-between; padding:0.4rem 0.55rem; border:1px solid #edebe9; border-radius:4px; background:#fff; gap:0.5rem; flex-wrap:wrap;";
         row.innerHTML = `
-          <div style="display:flex; align-items:center; gap:0.5rem; width:130px;">
+          <div style="display:flex; align-items:center; gap:0.45rem; width:115px;">
             <input type="checkbox" id="wd-chk-${dayType}" class="wd-working-chk" ${isWorking ? "checked" : ""} onchange="toggleDayRowInputs(${dayType})">
             <label for="wd-chk-${dayType}" style="font-weight:600; font-size:0.85rem; cursor:pointer;">${name}</label>
           </div>
-          <div id="wd-inputs-${dayType}" style="display:flex; align-items:center; gap:0.5rem; opacity:${isWorking ? '1' : '0.4'};">
-            <span style="font-size:0.8rem; color:var(--text-muted);">From:</span>
-            <input type="time" class="wd-from" value="${shift1From}" style="padding:0.2rem; font-size:0.85rem;" ${isWorking ? "" : "disabled"}>
-            <span style="font-size:0.8rem; color:var(--text-muted);">To:</span>
-            <input type="time" class="wd-to" value="${shift1To}" style="padding:0.2rem; font-size:0.85rem;" ${isWorking ? "" : "disabled"}>
+          <div id="wd-inputs-${dayType}" style="display:flex; align-items:center; gap:0.45rem; flex-wrap:wrap; opacity:${isWorking ? '1' : '0.4'};">
+            <span style="font-size:0.75rem; font-weight:600; color:#004578;">S1:</span>
+            <input type="time" class="wd-s1-from" value="${shift1From}" onchange="recalcScheduleModalMetrics()" style="padding:0.18rem; font-size:0.82rem;" ${isWorking ? "" : "disabled"}>
+            <span style="font-size:0.75rem; color:var(--text-muted);">–</span>
+            <input type="time" class="wd-s1-to" value="${shift1To}" onchange="recalcScheduleModalMetrics()" style="padding:0.18rem; font-size:0.82rem;" ${isWorking ? "" : "disabled"}>
+            <span style="font-size:0.75rem; font-weight:600; color:#004578; margin-left:0.35rem;">S2:</span>
+            <input type="time" class="wd-s2-from" value="${shift2From}" onchange="recalcScheduleModalMetrics()" style="padding:0.18rem; font-size:0.82rem;" ${isWorking ? "" : "disabled"}>
+            <span style="font-size:0.75rem; color:var(--text-muted);">–</span>
+            <input type="time" class="wd-s2-to" value="${shift2To}" onchange="recalcScheduleModalMetrics()" style="padding:0.18rem; font-size:0.82rem;" ${isWorking ? "" : "disabled"}>
+            <button type="button" class="btn btn-sm btn-secondary" title="Clear Shift 2 (no lunch break)" onclick="clearDayShift2(${dayType})" style="padding:0.12rem 0.35rem; font-size:0.7rem;" ${isWorking ? "" : "disabled"}>No S2</button>
+            <span id="wd-hrs-${dayType}" class="badge" style="background:#eff6fc; color:#004578; min-width:44px; text-align:center;">0h</span>
           </div>
         `;
         rowsContainer.appendChild(row);
       });
 
+      recalcScheduleModalMetrics(false);
       document.getElementById("calendar-schedule-modal").style.display = "flex";
+    }
+
+    function clearDayShift2(dayType) {
+      const row = document.querySelector(`.cal-day-row[data-day-type='${dayType}']`);
+      if (!row) return;
+      row.querySelector(".wd-s2-from").value = "";
+      row.querySelector(".wd-s2-to").value = "";
+      recalcScheduleModalMetrics(true);
+    }
+
+    function recalcScheduleModalMetrics(updateOptionInputs = true) {
+      let workingDays = 0;
+      let totalWeekHours = 0;
+
+      document.querySelectorAll(".cal-day-row").forEach(r => {
+        const dayType = parseInt(r.dataset.dayType);
+        const isWorking = r.querySelector(".wd-working-chk").checked;
+        const s1From = r.querySelector(".wd-s1-from").value;
+        const s1To = r.querySelector(".wd-s1-to").value;
+        const s2From = r.querySelector(".wd-s2-from").value;
+        const s2To = r.querySelector(".wd-s2-to").value;
+
+        let dayHrs = 0;
+        if (isWorking) {
+          dayHrs += calcShiftHours(s1From, s1To);
+          dayHrs += calcShiftHours(s2From, s2To);
+          if (dayHrs > 0) {
+            workingDays += 1;
+            totalWeekHours += dayHrs;
+          }
+        }
+        const badge = document.getElementById(`wd-hrs-${dayType}`);
+        if (badge) {
+          badge.textContent = isWorking ? `${dayHrs}h` : `Off`;
+        }
+      });
+
+      if (updateOptionInputs && workingDays > 0) {
+        const hPerDay = Math.round((totalWeekHours / workingDays) * 100) / 100;
+        const hPerWeek = Math.round(totalWeekHours * 100) / 100;
+        const dPerMonth = workingDays === 5 ? 20 : (workingDays === 6 ? 24 : (workingDays === 7 ? 30 : workingDays * 4));
+        document.getElementById("cal-opt-hours-day").value = hPerDay;
+        document.getElementById("cal-opt-hours-week").value = hPerWeek;
+        document.getElementById("cal-opt-days-month").value = dPerMonth;
+      }
     }
 
     function toggleDayRowInputs(dayType) {
       const chk = document.getElementById(`wd-chk-${dayType}`);
       const inputsDiv = document.getElementById(`wd-inputs-${dayType}`);
       inputsDiv.style.opacity = chk.checked ? "1" : "0.4";
-      inputsDiv.querySelectorAll("input").forEach(i => i.disabled = !chk.checked);
+      inputsDiv.querySelectorAll("input, button").forEach(i => i.disabled = !chk.checked);
+      recalcScheduleModalMetrics(true);
     }
 
     function closeCalendarScheduleModal() {
@@ -2008,23 +2287,32 @@
       rows.forEach(r => {
         const dayType = parseInt(r.dataset.dayType);
         const chk = r.querySelector(".wd-working-chk");
-        const fromInput = r.querySelector(".wd-from");
-        const toInput = r.querySelector(".wd-to");
+        const s1From = r.querySelector(".wd-s1-from");
+        const s1To = r.querySelector(".wd-s1-to");
+        const s2From = r.querySelector(".wd-s2-from");
+        const s2To = r.querySelector(".wd-s2-to");
 
         if (preset === "mon_sun_4h") {
-          // Mon-Sun 4h (13:00 to 17:00)
+          // Mon-Sun 4h (13:00 to 17:00), single shift
           chk.checked = true;
-          fromInput.value = "13:00";
-          toInput.value = "17:00";
+          s1From.value = "13:00";
+          s1To.value = "17:00";
+          s2From.value = "";
+          s2To.value = "";
         } else if (preset === "mon_fri_8h") {
-          // Mon-Fri 8h (08:00 to 17:00), Sat-Sun off
+          // Mon-Fri 8h with 1h lunch break (08:00-12:00, 13:00-17:00), Sat-Sun off
           const isWeekday = dayType >= 2 && dayType <= 6;
           chk.checked = isWeekday;
-          fromInput.value = "08:00";
-          toInput.value = "17:00";
+          s1From.value = "08:00";
+          s1To.value = "12:00";
+          s2From.value = isWeekday ? "13:00" : "";
+          s2To.value = isWeekday ? "17:00" : "";
         }
-        toggleDayRowInputs(dayType);
+        const inputsDiv = document.getElementById(`wd-inputs-${dayType}`);
+        inputsDiv.style.opacity = chk.checked ? "1" : "0.4";
+        inputsDiv.querySelectorAll("input, button").forEach(i => i.disabled = !chk.checked);
       });
+      recalcScheduleModalMetrics(true);
     }
 
     async function saveCalendarSchedule() {
@@ -2034,28 +2322,48 @@
       document.querySelectorAll(".cal-day-row").forEach(r => {
         const dayType = parseInt(r.dataset.dayType);
         const isWorking = r.querySelector(".wd-working-chk").checked;
-        const fromVal = r.querySelector(".wd-from").value || "08:00";
-        const toVal = r.querySelector(".wd-to").value || "17:00";
+        const s1From = r.querySelector(".wd-s1-from").value;
+        const s1To = r.querySelector(".wd-s1-to").value;
+        const s2From = r.querySelector(".wd-s2-from").value;
+        const s2To = r.querySelector(".wd-s2-to").value;
 
-        const shifts = isWorking ? [
-          {
-            from_time: fromVal.length === 5 ? fromVal + ":00" : fromVal,
-            to_time: toVal.length === 5 ? toVal + ":00" : toVal
+        const shifts = [];
+        if (isWorking) {
+          if (s1From && s1To) {
+            shifts.push({
+              from_time: s1From.length === 5 ? s1From + ":00" : s1From,
+              to_time: s1To.length === 5 ? s1To + ":00" : s1To
+            });
           }
-        ] : [];
+          if (s2From && s2To) {
+            shifts.push({
+              from_time: s2From.length === 5 ? s2From + ":00" : s2From,
+              to_time: s2To.length === 5 ? s2To + ":00" : s2To
+            });
+          }
+        }
 
         weekdaysPayload.push({
           day_type: dayType,
-          day_working: isWorking,
+          day_working: isWorking && shifts.length > 0,
           working_times: shifts
         });
       });
+
+      const hoursPerDay = parseFloat(document.getElementById("cal-opt-hours-day").value) || null;
+      const hoursPerWeek = parseFloat(document.getElementById("cal-opt-hours-week").value) || null;
+      const daysPerMonth = parseInt(document.getElementById("cal-opt-days-month").value) || null;
 
       try {
         const resp = await fetch(`/api/calendars/${calId}/weekdays`, {
           method: "PUT",
           headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
-          body: JSON.stringify({ weekdays: weekdaysPayload })
+          body: JSON.stringify({
+            weekdays: weekdaysPayload,
+            hours_per_day: hoursPerDay,
+            hours_per_week: hoursPerWeek,
+            days_per_month: daysPerMonth
+          })
         });
 
         if (!resp.ok) {
@@ -2064,11 +2372,111 @@
           return;
         }
 
-        alert("Calendar working schedule updated successfully!");
+        alert("Calendar working schedule and MS Project conversion options updated successfully!");
         closeCalendarScheduleModal();
         loadCalendars();
       } catch (e) {
         console.error("Save schedule error:", e);
+      }
+    }
+
+    function openCalendarExceptionModal(calId) {
+      const cal = allCalendars.find(c => c.id === calId);
+      document.getElementById("cal-exc-cal-id").value = calId;
+      document.getElementById("cal-exc-modal-title").innerHTML = `<i class="fa-solid fa-calendar-day" style="color:var(--primary);"></i> Add Exception: ${escapeHtml(cal ? cal.name : '')}`;
+      document.getElementById("cal-exc-name").value = "";
+      const todayIso = new Date().toISOString().split("T")[0];
+      document.getElementById("cal-exc-from-date").value = todayIso;
+      document.getElementById("cal-exc-to-date").value = todayIso;
+      document.getElementById("cal-exc-working").value = "false";
+      document.getElementById("cal-exc-s1-from").value = "08:00";
+      document.getElementById("cal-exc-s1-to").value = "12:00";
+      document.getElementById("cal-exc-s2-from").value = "13:00";
+      document.getElementById("cal-exc-s2-to").value = "17:00";
+      toggleExceptionShiftsBox();
+      document.getElementById("calendar-exception-modal").style.display = "flex";
+    }
+
+    function closeCalendarExceptionModal() {
+      document.getElementById("calendar-exception-modal").style.display = "none";
+    }
+
+    function toggleExceptionShiftsBox() {
+      const isWorking = document.getElementById("cal-exc-working").value === "true";
+      document.getElementById("cal-exc-shifts-box").style.display = isWorking ? "block" : "none";
+    }
+
+    async function submitCalendarException() {
+      const calId = document.getElementById("cal-exc-cal-id").value;
+      const name = document.getElementById("cal-exc-name").value.trim();
+      const fromDate = document.getElementById("cal-exc-from-date").value;
+      const toDate = document.getElementById("cal-exc-to-date").value || fromDate;
+      const isWorking = document.getElementById("cal-exc-working").value === "true";
+
+      if (!name || !fromDate) {
+        alert("Please provide an exception name and date.");
+        return;
+      }
+
+      const workingTimes = [];
+      if (isWorking) {
+        const s1f = document.getElementById("cal-exc-s1-from").value;
+        const s1t = document.getElementById("cal-exc-s1-to").value;
+        const s2f = document.getElementById("cal-exc-s2-from").value;
+        const s2t = document.getElementById("cal-exc-s2-to").value;
+        if (s1f && s1t) {
+          workingTimes.push({
+            from_time: s1f.length === 5 ? s1f + ":00" : s1f,
+            to_time: s1t.length === 5 ? s1t + ":00" : s1t
+          });
+        }
+        if (s2f && s2t) {
+          workingTimes.push({
+            from_time: s2f.length === 5 ? s2f + ":00" : s2f,
+            to_time: s2t.length === 5 ? s2t + ":00" : s2t
+          });
+        }
+      }
+
+      try {
+        const resp = await fetch(`/api/calendars/${calId}/exceptions`, {
+          method: "POST",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: name,
+            from_date: fromDate,
+            to_date: toDate,
+            working: isWorking,
+            working_times: workingTimes
+          })
+        });
+        if (!resp.ok) {
+          const err = await resp.json();
+          alert("Error: " + (err.detail || "Failed to add exception"));
+          return;
+        }
+        closeCalendarExceptionModal();
+        loadCalendars();
+      } catch (e) {
+        console.error("Add exception error:", e);
+      }
+    }
+
+    async function deleteCalendarException(calId, excId) {
+      if (!confirm("Delete this calendar exception?")) return;
+      try {
+        const resp = await fetch(`/api/calendars/${calId}/exceptions/${excId}`, {
+          method: "DELETE",
+          headers: getAuthHeaders()
+        });
+        if (!resp.ok) {
+          const err = await resp.json();
+          alert("Error: " + (err.detail || "Failed to delete exception"));
+          return;
+        }
+        loadCalendars();
+      } catch (e) {
+        console.error("Delete exception error:", e);
       }
     }
 

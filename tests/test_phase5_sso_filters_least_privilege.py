@@ -71,11 +71,20 @@ def test_emergency_admin_login_and_onboarding(client, db_session, monkeypatch):
     port_resp = client.get("/api/portfolio", headers=emergency_headers)
     assert port_resp.status_code == 200
 
-    # 4. Verify un-onboarded Entra ID user cannot log in before being added (403 Forbidden)
+    # 4a. Verify forged/untrusted JWT signature is rejected (401 Unauthorized)
     import jwt
-    unregistered_token = jwt.encode(
+    forged_token = jwt.encode(
         {"preferred_username": "new.pm@garantgroup.eu", "name": "New PM"},
-        "entra_dummy_key",
+        "forged_attacker_key",
+        algorithm="HS256",
+    )
+    forged_resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {forged_token}"})
+    assert forged_resp.status_code == 401
+
+    # 4b. Verify valid signed SSO session token for un-onboarded Entra ID user is denied access (403 Forbidden)
+    unregistered_token = jwt.encode(
+        {"preferred_username": "new.pm@garantgroup.eu", "name": "New PM", "auth_type": "SSO_SESSION"},
+        settings.SECRET_KEY,
         algorithm="HS256",
     )
     unreg_resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {unregistered_token}"})
@@ -99,9 +108,13 @@ def test_initial_admin_bootstrap(client, db_session, monkeypatch):
     test_admin_email = "bootstrap.admin@garantgroup.eu"
     monkeypatch.setattr(settings, "INITIAL_ADMIN_EMAIL", test_admin_email)
 
-    # Simulate Entra ID token with preferred_username matching INITIAL_ADMIN_EMAIL
+    # Simulate verified SSO session token with preferred_username matching INITIAL_ADMIN_EMAIL
     import jwt
-    mock_token = jwt.encode({"preferred_username": test_admin_email, "name": "Bootstrap Admin"}, "secret", algorithm="HS256")
+    mock_token = jwt.encode(
+        {"preferred_username": test_admin_email, "name": "Bootstrap Admin", "auth_type": "SSO_SESSION"},
+        settings.SECRET_KEY,
+        algorithm="HS256",
+    )
     headers = {"Authorization": f"Bearer {mock_token}"}
 
     resp = client.get("/api/auth/me", headers=headers)

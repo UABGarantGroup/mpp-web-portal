@@ -92,35 +92,59 @@ def _init_mpxj():
         return False
 
 
+def _safe_parse_xml_bytes(file_bytes: bytes) -> ET.Element:
+    """
+    Safely parses XML bytes while blocking XML External Entities (XXE) and
+    DOCTYPE / ENTITY expansion ('Billion Laughs' DoS) attacks.
+    """
+    xml_str = file_bytes.decode("utf-8", errors="replace")
+    upper_head = xml_str[:4096].upper()
+    if "<!DOCTYPE" in upper_head or "<!ENTITY" in upper_head:
+        raise ValueError("Security violation: XML DOCTYPE and ENTITY declarations are forbidden.")
+
+    try:
+        import defusedxml.ElementTree as DefusedET
+        return DefusedET.fromstring(xml_str)
+    except ImportError:
+        return ET.fromstring(xml_str)
+
+
 def parse_project_file(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
     Parses an uploaded project schedule file (.mpp or .xml).
     Extracts summary task metrics, project properties, and resource assignments.
     """
-    ext = os.path.splitext(filename.lower())[1]
+    safe_name = os.path.basename(filename or "")
+    ext = os.path.splitext(safe_name.lower())[1]
+    if ext not in (".mpp", ".xml"):
+        raise ValueError(f"Unsupported schedule file extension '{ext}'. Only .mpp and .xml files are allowed.")
 
     if ext == ".xml":
+        # Check for XXE / Entity expansion before any parser touches the XML
+        _safe_parse_xml_bytes(file_bytes)
         # First try fast native XML parser, fallback to MPXJ if needed
         try:
             return parse_project_xml(file_bytes)
+        except ValueError:
+            raise
         except Exception as e:
             logger.info("Native XML parse failed (%s), trying MPXJ reader...", e)
 
     # For .mpp or complex XML files, use MPXJ
     if _init_mpxj():
-        return parse_with_mpxj(file_bytes, filename)
+        return parse_with_mpxj(file_bytes, safe_name)
 
     if ext == ".xml":
         return parse_project_xml(file_bytes)
 
-    raise ValueError(f"Unable to parse '{filename}'. Java Virtual Machine is required to read binary .mpp files.")
+    raise ValueError(f"Unable to parse '{safe_name}'. Java Virtual Machine is required to read binary .mpp files.")
 
 
 def parse_project_xml(file_bytes: bytes) -> Dict[str, Any]:
     """
     Pure Python MSPDI XML parser for extracting summary metrics, resources, and custom field values.
     """
-    root = ET.fromstring(file_bytes.decode("utf-8", errors="replace"))
+    root = _safe_parse_xml_bytes(file_bytes)
 
     # Determine namespace
     ns_uri = ""

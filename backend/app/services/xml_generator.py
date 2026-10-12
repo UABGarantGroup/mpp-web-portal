@@ -50,7 +50,8 @@ RESOURCE_TYPE_MAP: Dict[ResourceTypeEnum, int] = {
 
 def compute_calendar_metrics(cal: Optional[CalendarModel]):
     """
-    Derives project-level calendar headers from the calendar's weekday shift schedule.
+    Derives project-level calendar headers from the calendar's weekday shift schedule
+    and MS Project Schedule Options (Hours per day, Hours per week, Days per month).
     """
     default_start = "08:00:00"
     default_finish = "17:00:00"
@@ -58,7 +59,7 @@ def compute_calendar_metrics(cal: Optional[CalendarModel]):
     minutes_per_week = 2400
     days_per_month = 20
 
-    if not cal or not cal.weekdays:
+    if not cal:
         return default_start, default_finish, minutes_per_day, minutes_per_week, days_per_month
 
     active_starts = []
@@ -67,7 +68,7 @@ def compute_calendar_metrics(cal: Optional[CalendarModel]):
     working_days_count = 0
     daily_minutes_list = []
 
-    for wd in cal.weekdays:
+    for wd in (cal.weekdays or []):
         if wd.day_working and wd.working_times:
             working_days_count += 1
             day_mins = 0
@@ -89,13 +90,33 @@ def compute_calendar_metrics(cal: Optional[CalendarModel]):
         default_start = min(active_starts)
     if active_finishes:
         default_finish = max(active_finishes)
+
     if total_weekly_minutes > 0:
         minutes_per_week = total_weekly_minutes
         if daily_minutes_list and len(set(daily_minutes_list)) == 1:
             minutes_per_day = daily_minutes_list[0]
         else:
             minutes_per_day = int(round(total_weekly_minutes / working_days_count)) if working_days_count > 0 else 480
-        days_per_month = int(round(working_days_count * 4.33))
+
+        # MS Project standard DaysPerMonth conversion by working days per week
+        if working_days_count == 5:
+            days_per_month = 20
+        elif working_days_count == 6:
+            days_per_month = 24
+        elif working_days_count == 7:
+            days_per_month = 30
+        elif working_days_count > 0:
+            days_per_month = working_days_count * 4
+
+    # Honor explicit MS Project Schedule Options on the calendar when customized
+    cal_hpd = getattr(cal, "hours_per_day", None)
+    cal_hpw = getattr(cal, "hours_per_week", None)
+    cal_dpm = getattr(cal, "days_per_month", None)
+    if cal_hpd is not None and cal_hpw is not None and cal_dpm is not None:
+        if (cal_hpd, cal_hpw, cal_dpm) != (8.0, 40.0, 20) or total_weekly_minutes == 0:
+            minutes_per_day = int(round(cal_hpd * 60))
+            minutes_per_week = int(round(cal_hpw * 60))
+            days_per_month = int(cal_dpm)
 
     return default_start, default_finish, minutes_per_day, minutes_per_week, days_per_month
 
@@ -233,7 +254,7 @@ def build_ms_project_xml(
                     ET.SubElement(wt2, "FromTime").text = "13:00:00"
                     ET.SubElement(wt2, "ToTime").text = "17:00:00"
 
-        # Write Exceptions nested inside <TimePeriod>
+        # Write Exceptions nested inside <TimePeriod> (with <WorkingTimes> when DayWorking=1)
         if cal_item.exceptions:
             exceptions_el = ET.SubElement(cal_el, "Exceptions")
             sorted_exceptions = sorted(cal_item.exceptions, key=lambda x: x.from_date)
@@ -250,7 +271,23 @@ def build_ms_project_xml(
                 ET.SubElement(exc_el, "Type").text = "1"
                 ET.SubElement(exc_el, "DayWorking").text = "1" if exc.working else "0"
 
+                if exc.working:
+                    exc_wtimes_el = ET.SubElement(exc_el, "WorkingTimes")
+                    exc_shifts = getattr(exc, "working_times", None) or [
+                        {"from_time": "08:00:00", "to_time": "12:00:00"},
+                        {"from_time": "13:00:00", "to_time": "17:00:00"},
+                    ]
+                    for s in exc_shifts:
+                        f_time = s.from_time if hasattr(s, "from_time") else s["from_time"]
+                        t_time = s.to_time if hasattr(s, "to_time") else s["to_time"]
+                        wt_el = ET.SubElement(exc_wtimes_el, "WorkingTime")
+                        ET.SubElement(wt_el, "FromTime").text = f_time
+                        ET.SubElement(wt_el, "ToTime").text = t_time
+
     # Write Resource-Specific Derived Calendars (ALL Active Resources)
+    # In MS Project, a Resource's BaseCalendarUID controls task scheduling when assigned.
+    # If the resource uses the default calendar (1) or an inactive calendar, inherit the Project's selected Base Calendar
+    # so selecting a Project Base Calendar (e.g. Afternoon 28h) actually schedules assigned resources on that calendar.
     active_resources = sorted([r for r in resources.values() if r.is_active], key=lambda x: x.id)
     active_base_uids = {c.id for c in active_base_calendars}
 
@@ -260,7 +297,10 @@ def build_ms_project_xml(
         ET.SubElement(res_cal_el, "UID").text = str(res_cal_uid)
         ET.SubElement(res_cal_el, "Name").text = res.name
         ET.SubElement(res_cal_el, "IsBaseCalendar").text = "0"
-        res_base_id = res.base_calendar_id if res.base_calendar_id in active_base_uids else selected_cal.id
+        if res.base_calendar_id in active_base_uids and res.base_calendar_id != 1:
+            res_base_id = res.base_calendar_id
+        else:
+            res_base_id = selected_cal.id
         ET.SubElement(res_cal_el, "BaseCalendarUID").text = str(res_base_id)
 
     # 4. Tasks (Project Summary Task UID 0)

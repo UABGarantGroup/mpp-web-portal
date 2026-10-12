@@ -46,6 +46,9 @@ class CalendarDB(Base):
     is_base_calendar = Column(Boolean, default=True, nullable=False)
     base_calendar_uid = Column(Integer, default=-1, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
+    hours_per_day = Column(Float, default=8.0, nullable=False)
+    hours_per_week = Column(Float, default=40.0, nullable=False)
+    days_per_month = Column(Integer, default=20, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
@@ -101,6 +104,10 @@ class CalendarExceptionDB(Base):
     from_date = Column(Date, nullable=False, index=True)
     to_date = Column(Date, nullable=False)
     working = Column(Boolean, default=False, nullable=False)
+    shift1_from = Column(String(8), nullable=True)  # Optional working shift 1 start "08:00:00"
+    shift1_to = Column(String(8), nullable=True)    # Optional working shift 1 finish "12:00:00"
+    shift2_from = Column(String(8), nullable=True)  # Optional working shift 2 start "13:00:00"
+    shift2_to = Column(String(8), nullable=True)    # Optional working shift 2 finish "17:00:00"
     source = Column(String(50), default="MANUAL", nullable=False)  # "MANUAL" or "IMPORT"
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
