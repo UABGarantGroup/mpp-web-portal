@@ -20,7 +20,9 @@ class Settings(BaseSettings):
     AZURE_AD_TENANT_ID: str = ""
     AZURE_AD_CLIENT_SECRET: str = ""
     INITIAL_ADMIN_EMAIL: str = ""  # Bootstrap admin user from Entra ID
-    AUTH_ENABLED: bool = False  # Enabled in production; allows development bypass
+    EMERGENCY_ADMIN_USERNAME: str = "emergency_admin"
+    EMERGENCY_ADMIN_PASSWORD: str = ""
+    AUTH_ENABLED: bool = False  # Set to true in .env to require login before accessing data
 
     # JVM & MPXJ (for .mpp reading)
     JVM_PATH: str = r"C:\Program Files\Android\Android Studio\jbr\bin\server\jvm.dll"

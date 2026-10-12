@@ -20,6 +20,66 @@ def test_auth_config_endpoint(client):
     assert "tenant_id" in data
     assert "client_id" in data
     assert "auth_enabled" in data
+    assert "emergency_login_enabled" in data
+
+
+def test_strict_auth_blocks_unauthenticated_requests(client, monkeypatch):
+    """When AUTH_ENABLED=True, unauthenticated requests to any data endpoint must be rejected with 401."""
+    monkeypatch.setattr(settings, "AUTH_ENABLED", True)
+
+    for endpoint in ["/api/auth/me", "/api/portfolio", "/api/projects", "/api/resources", "/api/calendars"]:
+        resp = client.get(endpoint)
+        assert resp.status_code == 401, f"Expected 401 for {endpoint}, got {resp.status_code}"
+
+    # Even if dev headers X-User-Role are passed, AUTH_ENABLED=True must reject without a valid Bearer token
+    resp_with_dev_header = client.get(
+        "/api/portfolio",
+        headers={"X-User-Role": "Admin", "X-User-Email": "admin@enterprise.com"},
+    )
+    assert resp_with_dev_header.status_code == 401
+
+
+def test_emergency_admin_login_and_onboarding(client, db_session, monkeypatch):
+    """Test Emergency (Onboarding) Admin login from .env credentials and onboarding a first Entra ID Admin."""
+    monkeypatch.setattr(settings, "AUTH_ENABLED", True)
+    monkeypatch.setattr(settings, "EMERGENCY_ADMIN_USERNAME", "emergency_admin")
+    monkeypatch.setattr(settings, "EMERGENCY_ADMIN_PASSWORD", "Test_Emergency_Secret_2026!")
+
+    # 1. Invalid password -> 401
+    bad_resp = client.post(
+        "/api/auth/emergency-login",
+        json={"username": "emergency_admin", "password": "wrong_password"},
+    )
+    assert bad_resp.status_code == 401
+
+    # 2. Valid emergency credentials -> 200 + signed JWT token
+    ok_resp = client.post(
+        "/api/auth/emergency-login",
+        json={"username": "emergency_admin", "password": "Test_Emergency_Secret_2026!"},
+    )
+    assert ok_resp.status_code == 200
+    token_data = ok_resp.json()
+    assert "access_token" in token_data
+    assert token_data["user"]["is_admin"] is True
+    emergency_headers = {"Authorization": f"Bearer {token_data['access_token']}"}
+
+    # 3. Verify Emergency Admin can access /api/auth/me and /api/portfolio when AUTH_ENABLED=True
+    me_resp = client.get("/api/auth/me", headers=emergency_headers)
+    assert me_resp.status_code == 200
+    assert me_resp.json()["primary_role"] == "Admin"
+
+    port_resp = client.get("/api/portfolio", headers=emergency_headers)
+    assert port_resp.status_code == 200
+
+    # 4. Verify un-onboarded Entra ID user cannot log in before being added (403 Forbidden)
+    import jwt
+    unregistered_token = jwt.encode(
+        {"preferred_username": "new.pm@garantgroup.eu", "name": "New PM"},
+        "entra_dummy_key",
+        algorithm="HS256",
+    )
+    unreg_resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {unregistered_token}"})
+    assert unreg_resp.status_code == 403
 
 
 def test_auth_me_endpoint_dev_and_admin(client):

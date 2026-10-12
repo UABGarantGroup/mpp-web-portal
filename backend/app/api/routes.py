@@ -4,14 +4,16 @@ Enforces RBAC permissions, audit logging, multi-country calendars, and template 
 """
 
 import os
+import secrets
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 import urllib.parse
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from backend.app.core.auth import CurrentUser, get_current_user, require_roles
+from backend.app.core.auth import CurrentUser, create_emergency_token, get_current_user, require_roles
 from backend.app.core.config import settings
 from backend.app.db.models import (
     AuditLogDB,
@@ -65,6 +67,15 @@ from backend.app.services.xml_generator import build_ms_project_xml
 router = APIRouter()
 
 
+class EmergencyLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class SSOExchangeRequest(BaseModel):
+    code: str
+    redirect_uri: str
+
 
 # --- System Endpoints ---
 
@@ -77,12 +88,99 @@ def health_check():
 
 @router.get("/api/auth/config", tags=["Auth"])
 def get_auth_config():
-    """Returns SSO client configuration (tenant ID, client ID) for MSAL.js frontend authentication."""
+    """Returns SSO client configuration (tenant ID, client ID) for MSAL.js / OAuth2 frontend authentication."""
     return {
         "auth_enabled": settings.AUTH_ENABLED,
         "tenant_id": settings.AZURE_AD_TENANT_ID or None,
         "client_id": settings.AZURE_AD_CLIENT_ID or None,
         "initial_admin_configured": bool(settings.INITIAL_ADMIN_EMAIL),
+        "emergency_login_enabled": bool(settings.EMERGENCY_ADMIN_USERNAME and settings.EMERGENCY_ADMIN_PASSWORD),
+    }
+
+
+@router.post("/api/auth/sso/exchange", tags=["Auth"])
+def exchange_entra_sso_code(req: SSOExchangeRequest):
+    """
+    Exchanges an Entra ID OAuth2 authorization code for an ID/Access token on the backend server
+    using the confidential client secret. Prevents AADSTS9002326 when the Azure Redirect URI is
+    registered under the 'Web' platform instead of 'Single-Page Application'.
+    """
+    import httpx
+
+    if not settings.AZURE_AD_TENANT_ID or not settings.AZURE_AD_CLIENT_ID or not settings.AZURE_AD_CLIENT_SECRET:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Microsoft Entra ID credentials are not fully configured on the server.",
+        )
+
+    token_url = f"https://login.microsoftonline.com/{settings.AZURE_AD_TENANT_ID.strip()}/oauth2/v2.0/token"
+    payload = {
+        "client_id": settings.AZURE_AD_CLIENT_ID.strip(),
+        "client_secret": settings.AZURE_AD_CLIENT_SECRET.strip(),
+        "grant_type": "authorization_code",
+        "code": req.code.strip(),
+        "redirect_uri": req.redirect_uri.strip(),
+        "scope": "openid profile email User.Read",
+    }
+
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(token_url, data=payload)
+        token_data = resp.json()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to contact Microsoft Entra ID token endpoint: {str(e)}",
+        )
+
+    if resp.status_code != 200 or ("id_token" not in token_data and "access_token" not in token_data):
+        err_desc = token_data.get("error_description") or token_data.get("error") or "Token exchange failed"
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Entra ID token exchange failed: {err_desc}",
+        )
+
+    jwt_token = token_data.get("id_token") or token_data.get("access_token")
+    return {
+        "access_token": jwt_token,
+        "token_type": "bearer",
+    }
+
+
+@router.post("/api/auth/emergency-login", tags=["Auth"])
+def emergency_admin_login(req: EmergencyLoginRequest):
+    """Authenticates the emergency / onboarding administrator using credentials stored in .env."""
+    if not settings.EMERGENCY_ADMIN_USERNAME or not settings.EMERGENCY_ADMIN_PASSWORD:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Emergency onboarding user is not configured in the server .env file.",
+        )
+
+    user_match = secrets.compare_digest(req.username.strip(), settings.EMERGENCY_ADMIN_USERNAME.strip())
+    pass_match = secrets.compare_digest(req.password, settings.EMERGENCY_ADMIN_PASSWORD)
+
+    if not (user_match and pass_match):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid emergency username or password.",
+        )
+
+    uname = settings.EMERGENCY_ADMIN_USERNAME.strip()
+    token = create_emergency_token(uname)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "authenticated": True,
+            "username": uname,
+            "email": uname,
+            "display_name": "Emergency Onboarding Admin",
+            "roles": ["Admin"],
+            "primary_role": "Admin",
+            "is_admin": True,
+            "is_pm": False,
+            "is_emergency": True,
+        },
     }
 
 
@@ -138,7 +236,11 @@ def map_db_calendar_to_model(c: CalendarDB) -> CalendarModel:
 
 
 @router.get("/api/calendars", response_model=List[CalendarModel], tags=["Calendars"])
-def list_calendars(include_inactive: bool = Query(False), db: Session = Depends(get_db)):
+def list_calendars(
+    include_inactive: bool = Query(False),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
     query = db.query(CalendarDB)
     if not include_inactive:
         query = query.filter(CalendarDB.is_active == True)
@@ -147,12 +249,16 @@ def list_calendars(include_inactive: bool = Query(False), db: Session = Depends(
 
 
 @router.get("/api/calendars/countries", tags=["Calendars"])
-def get_countries():
+def get_countries(user: CurrentUser = Depends(get_current_user)):
     return get_supported_countries()
 
 
 @router.get("/api/calendars/{calendar_id}", response_model=CalendarModel, tags=["Calendars"])
-def get_calendar(calendar_id: int, db: Session = Depends(get_db)):
+def get_calendar(
+    calendar_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
     cal = db.query(CalendarDB).filter(CalendarDB.id == calendar_id).first()
     if not cal:
         raise HTTPException(status_code=404, detail="Calendar not found")
@@ -344,6 +450,7 @@ def list_resources(
     kind: Optional[ResourceKindEnum] = Query(None),
     include_inactive: bool = Query(False),
     db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
 ):
     query = db.query(ResourceDB)
     if not include_inactive:
@@ -508,7 +615,10 @@ def update_resource_rates(
 # --- Custom Fields Endpoints ---
 
 @router.get("/api/custom-fields", tags=["Custom Fields"])
-def list_custom_fields(db: Session = Depends(get_db)):
+def list_custom_fields(
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
     cfs = db.query(CustomFieldDB).all()
     return [
         {
@@ -586,7 +696,11 @@ async def import_rates_endpoint(
 # --- Template Export Endpoints ---
 
 @router.post("/api/templates/export/xml", tags=["Export"])
-def export_project_xml(template_req: ProjectTemplateRequest, db: Session = Depends(get_db)):
+def export_project_xml(
+    template_req: ProjectTemplateRequest,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
     # Build dictionary of calendars
     cal_dbs = db.query(CalendarDB).all()
     calendars_dict = {c.id: map_db_calendar_to_model(c) for c in cal_dbs}
@@ -789,7 +903,11 @@ def create_project(
 
 
 @router.get("/api/projects/{project_id}", tags=["Projects"])
-def get_project_details(project_id: int, db: Session = Depends(get_db)):
+def get_project_details(
+    project_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
     proj = db.query(ProjectDB).filter(ProjectDB.id == project_id).first()
     if not proj:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -874,7 +992,11 @@ def update_project_budget(
 
 @router.get("/api/projects/{project_id}/template/xml", tags=["Projects"])
 @router.post("/api/projects/{project_id}/template/xml", tags=["Projects"])
-def export_project_template_by_id(project_id: int, db: Session = Depends(get_db)):
+def export_project_template_by_id(
+    project_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
     proj = db.query(ProjectDB).filter(ProjectDB.id == project_id).first()
     if not proj:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -901,13 +1023,17 @@ def export_project_template_by_id(project_id: int, db: Session = Depends(get_db)
         project_custom_values={"ERP Project Number": proj.erp_number},
     )
 
-    return export_project_xml(template_req, db=db)
+    return export_project_xml(template_req, db=db, user=user)
 
 
 # --- Stage Definitions & Status Toggles (Phase 3) ---
 
 @router.get("/api/stages", tags=["Stages"])
-def list_stages(include_blocked: bool = Query(False), db: Session = Depends(get_db)):
+def list_stages(
+    include_blocked: bool = Query(False),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
     query = db.query(StageDefinitionDB).order_by(StageDefinitionDB.sort_order)
     if not include_blocked:
         query = query.filter(StageDefinitionDB.is_active == True)
@@ -1318,7 +1444,7 @@ def refresh_project_template(
     db.commit()
 
     # Generate refreshed template with updated rates, calendars, and resources
-    return export_project_template_by_id(project_id=project_id, db=db)
+    return export_project_template_by_id(project_id=project_id, db=db, user=user)
 
 
 # --- Entra ID (Azure AD) Selective Directory Integration ---

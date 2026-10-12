@@ -22,6 +22,9 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_global_test_db():
+    # Default to AUTH_ENABLED=False for legacy test modules; dedicated auth tests override this with monkeypatch
+    settings.AUTH_ENABLED = False
+
     # Remove existing test db file if present
     if os.path.exists(TEST_DB_FILE):
         try:

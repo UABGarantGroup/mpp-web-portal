@@ -102,61 +102,103 @@
 </head>
 <body>
 
-  <!-- Top Header -->
-  <header>
+  <!-- Mandatory First Step: Full-Screen Login Gate -->
+  <div id="login-gate-overlay" style="position: fixed; inset: 0; z-index: 9999; background: linear-gradient(135deg, #0f291e 0%, #107c41 55%, #005a9e 100%); display: flex; align-items: center; justify-content: center; padding: 1.5rem;">
+    <div style="background: #ffffff; width: 100%; max-width: 460px; border-radius: 10px; box-shadow: 0 20px 50px rgba(0,0,0,0.35); overflow: hidden; border: 1px solid rgba(255,255,255,0.2);">
+      <!-- Top Banner -->
+      <div style="background: #f8f9fa; padding: 1.75rem 2rem 1.25rem; text-align: center; border-bottom: 1px solid #edebe9;">
+        <div style="width: 56px; height: 56px; border-radius: 12px; background: #e8f5e9; color: var(--primary); display: inline-flex; align-items: center; justify-content: center; font-size: 1.65rem; margin-bottom: 0.75rem; box-shadow: 0 2px 6px rgba(16,124,65,0.15);">
+          <i class="fa-solid fa-diagram-project"></i>
+        </div>
+        <h2 style="margin: 0; font-size: 1.25rem; color: #201f1e; font-weight: 700;">MS Project Resource &amp; Template Hub</h2>
+        <p style="margin: 0.35rem 0 0; font-size: 0.82rem; color: var(--text-muted);">
+          Enterprise Portfolio Center • Sign in required to access portal data
+        </p>
+      </div>
+
+      <div style="padding: 1.75rem 2rem 2rem;">
+        <!-- Error / Status Alert -->
+        <div id="login-gate-error" style="display: none; background: #fde7e9; border: 1px solid #f1707b; color: #a80000; padding: 0.75rem 0.9rem; border-radius: 6px; font-size: 0.82rem; margin-bottom: 1.25rem; line-height: 1.4;"></div>
+
+        <!-- Option 1: Microsoft Entra ID SSO -->
+        <div style="margin-bottom: 1.25rem;">
+          <button type="button" id="gate-sso-btn" onclick="signInEntraSSO()" class="btn" style="width: 100%; justify-content: center; background: #2f2f2f; border-color: #2f2f2f; color: #ffffff; padding: 0.7rem 1rem; font-size: 0.92rem; font-weight: 600; border-radius: 6px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);">
+            <i class="fa-brands fa-microsoft" style="color: #00a4ef; font-size: 1.1rem; margin-right: 0.4rem;"></i>
+            Sign In with Microsoft Entra ID (SSO)
+          </button>
+          <div style="font-size: 0.74rem; color: var(--text-muted); text-align: center; margin-top: 0.4rem;">
+            Minimum role required: <strong>Project Manager (PM)</strong> or <strong>Admin</strong>
+          </div>
+        </div>
+
+        <!-- Divider -->
+        <div style="display: flex; align-items: center; gap: 0.75rem; margin: 1.35rem 0;">
+          <div style="flex: 1; height: 1px; background: #edebe9;"></div>
+          <span style="font-size: 0.72rem; font-weight: 600; color: #8a8886; text-transform: uppercase; letter-spacing: 0.05em;">Or Emergency / Onboarding Admin</span>
+          <div style="flex: 1; height: 1px; background: #edebe9;"></div>
+        </div>
+
+        <!-- Option 2: Emergency / Onboarding Admin Form (.env credentials) -->
+        <form id="emergency-login-form" onsubmit="handleEmergencyLogin(event)" style="background: #faf9f8; padding: 1.1rem; border-radius: 6px; border: 1px solid #e1dfdd;">
+          <div style="font-size: 0.78rem; font-weight: 600; color: #323130; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.4rem;">
+            <i class="fa-solid fa-key" style="color: #d83b01;"></i>
+            <span>Emergency Onboarding User (<code>.env</code> Credentials)</span>
+          </div>
+          <div class="form-group" style="margin-bottom: 0.75rem;">
+            <label style="font-size: 0.76rem; color: #605e5c;">Username</label>
+            <input type="text" id="emergency-username" placeholder="e.g. emergency_admin" required autocomplete="username" style="width: 100%; padding: 0.45rem 0.6rem; font-size: 0.85rem;">
+          </div>
+          <div class="form-group" style="margin-bottom: 0.9rem;">
+            <label style="font-size: 0.76rem; color: #605e5c;">Password</label>
+            <input type="password" id="emergency-password" placeholder="Enter password from .env" required autocomplete="current-password" style="width: 100%; padding: 0.45rem 0.6rem; font-size: 0.85rem;">
+          </div>
+          <button type="submit" id="emergency-login-btn" class="btn btn-secondary" style="width: 100%; justify-content: center; padding: 0.55rem; font-size: 0.85rem; font-weight: 600;">
+            <i class="fa-solid fa-shield-halved"></i> Sign In as Onboarding Admin
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Top Header (Hidden until authenticated) -->
+  <header id="app-header" style="display: none;">
     <div class="brand">
       <i class="fa-solid fa-diagram-project"></i>
       <div>
-        <h1>MS Project Centralized Resource & Template Hub</h1>
+        <h1>MS Project Centralized Resource &amp; Template Hub</h1>
         <div style="font-size: 0.75rem; color: var(--text-muted);">Enterprise Resource Directory • Rates A–E • Project Center Portfolio</div>
       </div>
     </div>
     <div style="display: flex; align-items: center; gap: 0.75rem;">
-      <!-- Entra ID SSO User Card (Shown when signed in) -->
-      <div id="auth-user-card" style="display: none; align-items: center; gap: 0.6rem; background: #ffffff; padding: 0.35rem 0.75rem; border-radius: 4px; border: 1px solid #d2d0ce; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">
+      <!-- Authenticated User Profile Card -->
+      <div id="auth-user-card" style="display: flex; align-items: center; gap: 0.6rem; background: #ffffff; padding: 0.35rem 0.75rem; border-radius: 4px; border: 1px solid #d2d0ce; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">
         <i class="fa-solid fa-circle-user" style="font-size: 1.35rem; color: var(--primary);"></i>
         <div style="line-height: 1.25;">
           <div id="auth-display-name" style="font-size: 0.85rem; font-weight: 600; color: #323130;">User</div>
           <div style="display: flex; align-items: center; gap: 0.35rem;">
             <span id="auth-role-badge" class="badge" style="background: #e1dfdd; color: #323130; font-size: 0.7rem; padding: 0.1rem 0.35rem;">Role</span>
-            <span id="auth-email" style="font-size: 0.72rem; color: var(--text-muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
+            <span id="auth-email" style="font-size: 0.72rem; color: var(--text-muted); max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
           </div>
         </div>
-        <button id="sso-signout-btn" class="btn btn-sm btn-secondary" onclick="signOutEntraSSO()" title="Sign Out from Microsoft Entra ID" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin-left: 0.3rem;">
-          <i class="fa-solid fa-right-from-bracket"></i>
+        <button id="sso-signout-btn" class="btn btn-sm btn-secondary" onclick="signOutPortal()" title="Sign Out" style="padding: 0.25rem 0.6rem; font-size: 0.75rem; margin-left: 0.3rem;">
+          <i class="fa-solid fa-right-from-bracket"></i> Sign Out
         </button>
-      </div>
-
-      <!-- Sign In with Microsoft Button (Shown when SSO configured but not signed in) -->
-      <button id="sso-signin-btn" class="btn btn-sm" onclick="signInEntraSSO()" style="display: none; background: #2f2f2f; color: white; border-color: #2f2f2f; font-weight: 600; padding: 0.45rem 0.85rem; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.15);">
-        <i class="fa-brands fa-microsoft" style="color: #00a4ef; margin-right: 0.3rem;"></i> Sign In with Microsoft
-      </button>
-
-      <!-- Dev Role Selector (Active when SSO not yet logged in / offline fallback) -->
-      <div class="role-badge-box" id="dev-role-box">
-        <span>Active Role:</span>
-        <select id="role-selector" class="role-select" onchange="changeRole()">
-          <option value="Admin">Admin (Full Access)</option>
-          <option value="FinanceManager">Project Finance Manager</option>
-          <option value="PM">Project Manager (PM)</option>
-          <option value="ResourceManager">Resource Manager</option>
-        </select>
       </div>
     </div>
   </header>
 
-  <!-- Navigation Tabs -->
-  <nav class="tabs">
+  <!-- Navigation Tabs (Hidden until authenticated) -->
+  <nav id="app-nav" class="tabs" style="display: none;">
     <button class="tab-btn active" onclick="switchTab('portfolio')"><i class="fa-solid fa-table-cells"></i> Portfolio Center</button>
-    <button class="tab-btn" onclick="switchTab('new-project')"><i class="fa-solid fa-file-circle-plus"></i> New Project & Template Export</button>
-    <button class="tab-btn" onclick="switchTab('resources')"><i class="fa-solid fa-users"></i> Resource Pool & Rates</button>
-    <button class="tab-btn" onclick="switchTab('calendars')"><i class="fa-solid fa-calendar-days"></i> Calendars & Holidays</button>
+    <button class="tab-btn" onclick="switchTab('new-project')"><i class="fa-solid fa-file-circle-plus"></i> New Project &amp; Template Export</button>
+    <button class="tab-btn" onclick="switchTab('resources')"><i class="fa-solid fa-users"></i> Resource Pool &amp; Rates</button>
+    <button class="tab-btn" onclick="switchTab('calendars')"><i class="fa-solid fa-calendar-days"></i> Calendars &amp; Holidays</button>
     <button class="tab-btn" onclick="switchTab('stages')"><i class="fa-solid fa-sliders"></i> Stage Columns Config</button>
-    <button class="tab-btn" onclick="switchTab('users')"><i class="fa-solid fa-user-shield"></i> Portal Users & Access</button>
+    <button class="tab-btn" onclick="switchTab('users')"><i class="fa-solid fa-user-shield"></i> Portal Users &amp; Access</button>
   </nav>
 
-  <!-- Main Content -->
-  <main>
+  <!-- Main Content (Hidden until authenticated) -->
+  <main id="app-main" style="display: none;">
 
     <!-- TAB 1: PORTFOLIO VIEW (EXACT PROJECT CENTER REPLICA) -->
     <section id="tab-portfolio">
@@ -841,27 +883,29 @@
 
     document.getElementById("proj-start-date").value = new Date().toISOString().split("T")[0];
 
-    let ssoAccessToken = null;
+    let ssoAccessToken = sessionStorage.getItem("mpp_portal_token") || null;
     let currentAuthUser = null;
     let entraAuthConfig = null;
     let msalInstance = null;
-
-    function changeRole() {
-      currentRole = document.getElementById("role-selector").value;
-      console.log("Active role changed to:", currentRole);
-      updateTabVisibilityByRole();
-      loadPortfolio();
-    }
 
     function getAuthHeaders() {
       const headers = {};
       if (ssoAccessToken) {
         headers["Authorization"] = `Bearer ${ssoAccessToken}`;
-      } else {
-        headers["X-User-Role"] = currentRole;
-        headers["X-User-Email"] = currentRole === "FinanceManager" ? "finance@enterprise.com" : (currentRole === "PM" ? "domas.krupavicius@garantgroup.eu" : "admin@enterprise.com");
       }
       return headers;
+    }
+
+    function showLoginGateError(msg) {
+      const errBox = document.getElementById("login-gate-error");
+      if (!errBox) return;
+      if (msg) {
+        errBox.textContent = msg;
+        errBox.style.display = "block";
+      } else {
+        errBox.textContent = "";
+        errBox.style.display = "none";
+      }
     }
 
     function updateTabVisibilityByRole() {
@@ -895,120 +939,175 @@
         console.warn("Could not fetch auth config:", e);
       }
 
-      if (window.msal && entraAuthConfig && entraAuthConfig.client_id && entraAuthConfig.tenant_id) {
-        const msalConfig = {
-          auth: {
-            clientId: entraAuthConfig.client_id,
-            authority: `https://login.microsoftonline.com/${entraAuthConfig.tenant_id}`,
-            redirectUri: window.location.origin,
-          },
-          cache: {
-            cacheLocation: "sessionStorage",
-            storeAuthStateInCookie: false,
-          }
-        };
+      // Check if returning from Microsoft Entra ID OAuth2 redirect (?code=... or ?error=...)
+      const urlParams = new URLSearchParams(window.location.search);
+      const authCode = urlParams.get("code");
+      const authError = urlParams.get("error");
+      const authErrorDesc = urlParams.get("error_description");
 
+      if (authError) {
+        window.history.replaceState({}, document.title, window.location.pathname);
+        renderSignInState(false);
+        showLoginGateError(`Microsoft Entra ID Sign-In error: ${authErrorDesc || authError}`);
+        return;
+      }
+
+      if (authCode) {
+        window.history.replaceState({}, document.title, window.location.pathname);
         try {
-          msalInstance = new msal.PublicClientApplication(msalConfig);
-          await msalInstance.initialize();
-
-          // Check redirect result
-          const response = await msalInstance.handleRedirectPromise();
-          if (response && response.accessToken) {
-            ssoAccessToken = response.accessToken;
+          const exResp = await fetch("/api/auth/sso/exchange", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              code: authCode,
+              redirect_uri: window.location.origin
+            })
+          });
+          const exData = await exResp.json();
+          if (exResp.ok && exData.access_token) {
+            ssoAccessToken = exData.access_token;
+            sessionStorage.setItem("mpp_portal_token", ssoAccessToken);
             await verifyCurrentUserProfile();
             return;
+          } else {
+            renderSignInState(false);
+            showLoginGateError(exData.detail || "Failed to complete Microsoft Entra ID sign-in.");
+            return;
           }
-
-          // Check for existing signed-in account in session
-          const accounts = msalInstance.getAllAccounts();
-          if (accounts.length > 0) {
-            try {
-              const silentToken = await msalInstance.acquireTokenSilent({
-                scopes: ["User.Read"],
-                account: accounts[0]
-              });
-              ssoAccessToken = silentToken.accessToken;
-              await verifyCurrentUserProfile();
-              return;
-            } catch (silentErr) {
-              console.log("Silent token acquisition failed:", silentErr);
-            }
-          }
-
+        } catch (exErr) {
           renderSignInState(false);
-        } catch (initErr) {
-          console.warn("MSAL initialization failed:", initErr);
-          renderSignInState(false);
+          showLoginGateError("Error exchanging Entra ID authorization code: " + (exErr.message || exErr));
+          return;
         }
-      } else {
-        renderSignInState(false, true);
+      }
+
+      // If a session token already exists (from Emergency Admin or Entra SSO), verify it
+      if (ssoAccessToken) {
         await verifyCurrentUserProfile();
+      } else {
+        renderSignInState(false);
       }
     }
 
     async function signInEntraSSO() {
-      if (!msalInstance) return;
+      showLoginGateError(null);
+      if (!entraAuthConfig || !entraAuthConfig.client_id || !entraAuthConfig.tenant_id) {
+        showLoginGateError("Microsoft Entra ID SSO is not configured (missing Tenant ID or Client ID).");
+        return;
+      }
+      const authorizeUrl =
+        `https://login.microsoftonline.com/${encodeURIComponent(entraAuthConfig.tenant_id)}/oauth2/v2.0/authorize` +
+        `?client_id=${encodeURIComponent(entraAuthConfig.client_id)}` +
+        `&response_type=code` +
+        `&redirect_uri=${encodeURIComponent(window.location.origin)}` +
+        `&response_mode=query` +
+        `&scope=${encodeURIComponent("openid profile email User.Read")}` +
+        `&prompt=select_account`;
+
+      window.location.href = authorizeUrl;
+    }
+
+    async function handleEmergencyLogin(event) {
+      event.preventDefault();
+      showLoginGateError(null);
+      const username = document.getElementById("emergency-username").value.trim();
+      const password = document.getElementById("emergency-password").value;
+      const btn = document.getElementById("emergency-login-btn");
+
+      if (!username || !password) {
+        showLoginGateError("Please enter both emergency username and password.");
+        return;
+      }
+
+      btn.disabled = true;
       try {
-        const loginResponse = await msalInstance.loginPopup({
-          scopes: ["User.Read", "openid", "profile", "email"],
-          prompt: "select_account"
+        const resp = await fetch("/api/auth/emergency-login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password })
         });
-        ssoAccessToken = loginResponse.accessToken;
-        await verifyCurrentUserProfile();
-        loadPortfolio();
-        loadPortalUsers();
+        const data = await resp.json();
+        if (resp.ok && data.access_token) {
+          ssoAccessToken = data.access_token;
+          sessionStorage.setItem("mpp_portal_token", ssoAccessToken);
+          document.getElementById("emergency-password").value = "";
+          await verifyCurrentUserProfile();
+        } else {
+          showLoginGateError(data.detail || "Invalid emergency admin credentials.");
+        }
       } catch (err) {
-        console.error("SSO Login error:", err);
-        alert("Microsoft Entra ID Login failed: " + (err.message || err));
+        showLoginGateError("Failed to connect to authentication server.");
+      } finally {
+        btn.disabled = false;
       }
     }
 
-    async function signOutEntraSSO() {
-      if (msalInstance) {
-        const accounts = msalInstance.getAllAccounts();
-        if (accounts.length > 0) {
-          await msalInstance.logoutPopup({ account: accounts[0] });
-        }
-      }
+    async function signOutPortal() {
+      sessionStorage.removeItem("mpp_portal_token");
       ssoAccessToken = null;
       currentAuthUser = null;
+      portfolioData = null;
+
+      if (msalInstance) {
+        try {
+          const accounts = msalInstance.getAllAccounts();
+          if (accounts.length > 0) {
+            await msalInstance.logoutPopup({ account: accounts[0] });
+          }
+        } catch (e) {
+          console.warn("MSAL logout popup skipped:", e);
+        }
+      }
+
       renderSignInState(false);
-      window.location.reload();
     }
 
     async function verifyCurrentUserProfile() {
+      if (!ssoAccessToken) {
+        renderSignInState(false);
+        return false;
+      }
       try {
         const resp = await fetch("/api/auth/me", { headers: getAuthHeaders() });
         if (resp.ok) {
           currentAuthUser = await resp.json();
           currentRole = currentAuthUser.primary_role || "PM";
-          const selector = document.getElementById("role-selector");
-          if (selector) selector.value = currentRole;
+          showLoginGateError(null);
           renderSignInState(true);
           updateTabVisibilityByRole();
-        } else if (resp.status === 403) {
-          const err = await resp.json();
-          alert("Access Denied: " + err.detail);
+          await loadPortfolio();
+          return true;
+        } else {
+          const err = await resp.json().catch(() => ({}));
+          sessionStorage.removeItem("mpp_portal_token");
+          ssoAccessToken = null;
+          currentAuthUser = null;
           renderSignInState(false);
+          showLoginGateError(err.detail || "Authentication failed. Please sign in again.");
+          return false;
         }
       } catch (e) {
         console.warn("Could not verify auth user:", e);
+        renderSignInState(false);
+        return false;
       }
     }
 
-    function renderSignInState(isSignedIn, fallbackMode = false) {
-      const userCard = document.getElementById("auth-user-card");
-      const signInBtn = document.getElementById("sso-signin-btn");
-      const devRoleBox = document.getElementById("dev-role-box");
+    function renderSignInState(isSignedIn) {
+      const gateOverlay = document.getElementById("login-gate-overlay");
+      const appHeader = document.getElementById("app-header");
+      const appNav = document.getElementById("app-nav");
+      const appMain = document.getElementById("app-main");
       const displayName = document.getElementById("auth-display-name");
       const roleBadge = document.getElementById("auth-role-badge");
       const emailSpan = document.getElementById("auth-email");
 
       if (isSignedIn && currentAuthUser) {
-        if (userCard) userCard.style.display = "flex";
-        if (signInBtn) signInBtn.style.display = "none";
-        if (devRoleBox) devRoleBox.style.display = "none";
+        if (gateOverlay) gateOverlay.style.display = "none";
+        if (appHeader) appHeader.style.display = "flex";
+        if (appNav) appNav.style.display = "flex";
+        if (appMain) appMain.style.display = "block";
+
         if (displayName) displayName.textContent = currentAuthUser.display_name || currentAuthUser.username;
         if (roleBadge) {
           roleBadge.textContent = currentAuthUser.primary_role;
@@ -1016,14 +1115,10 @@
         }
         if (emailSpan) emailSpan.textContent = currentAuthUser.email;
       } else {
-        if (userCard) userCard.style.display = "none";
-        if (entraAuthConfig && entraAuthConfig.client_id) {
-          if (signInBtn) signInBtn.style.display = "inline-flex";
-          if (devRoleBox) devRoleBox.style.display = "none";
-        } else {
-          if (signInBtn) signInBtn.style.display = "none";
-          if (devRoleBox) devRoleBox.style.display = "flex";
-        }
+        if (gateOverlay) gateOverlay.style.display = "flex";
+        if (appHeader) appHeader.style.display = "none";
+        if (appNav) appNav.style.display = "none";
+        if (appMain) appMain.style.display = "none";
       }
     }
 
@@ -1054,10 +1149,19 @@
     // --- PORTFOLIO CENTER ---
 
     async function loadPortfolio() {
+      if (!ssoAccessToken) {
+        renderSignInState(false);
+        return;
+      }
       try {
         const filterElem = document.getElementById("portfolio-status-filter");
         const statusVal = filterElem ? filterElem.value : "OPEN";
         const resp = await fetch(`/api/portfolio?status=${encodeURIComponent(statusVal)}`, { headers: getAuthHeaders() });
+        if (resp.status === 401) {
+          renderSignInState(false);
+          return;
+        }
+        if (!resp.ok) return;
         portfolioData = await resp.json();
         stageColumns = portfolioData.stage_columns || [];
         renderPortfolioTable(portfolioData);
@@ -2769,10 +2873,9 @@
       }
     }
 
-    // Init: Initialize MSAL SSO, then load portfolio
+    // Init: Enforce mandatory Login Gate first; portfolio loads only after authentication succeeds
     (async function initApp() {
       await initMSALAuth();
-      await loadPortfolio();
     })();
   </script>
 </body>

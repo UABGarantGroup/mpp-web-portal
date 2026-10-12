@@ -1,173 +1,165 @@
-# Production Deployment Guide: MS Project Centralized Resource & Template Hub
+# Production Deployment Guide: Hyper-V Linux Virtual Machine (Ubuntu Server LTS)
 
-This portal can run **100% on local infrastructure (On-Premises)** or in the **Azure Cloud**.
-
-Because the portal is fully containerized with Docker, you can deploy it on:
-1. **Local Infrastructure (Recommended if keeping servers on-premise):**
-   - Any local Linux VM (Ubuntu, Debian, RHEL, Rocky Linux) or Windows Server running Docker.
-   - Behind your internal corporate network / reverse proxy (NGINX, IIS, Traefik).
-2. **Azure Cloud:**
-   - Azure Container Apps / Azure App Service (Linux) + Azure Database for PostgreSQL Flexible Server.
+This guide covers end-to-end deployment of the **MS Project Centralized Resource & Template Hub** on your local **Microsoft Hyper-V** infrastructure using an **Ubuntu Server 24.04 LTS (or 22.04 LTS)** virtual machine.
 
 ---
 
-## 1. Network & Firewall Requirements (On-Premises)
+## 1. Architecture Overview (Hyper-V Linux VM)
 
-When running on local infrastructure, the server needs:
-
-| Direction | Port / Protocol | Destination | Purpose |
-|---|---|---|---|
-| **Outbound** | `443` (HTTPS) | `login.microsoftonline.com`<br>`graph.microsoft.com` | Authenticating and querying Microsoft Entra ID (Graph API) for selective user & group sync. |
-| **Inbound** | `80` / `443` (HTTP/HTTPS) or `8000` | Local Network / Intranet | Allowing PMs and Admins within your company LAN or VPN to access the portal. |
-
-> [!NOTE]
-> **No public inbound internet access is required.** The portal can remain strictly internal on your corporate LAN/VPN. The only external connection is outbound HTTPS to Microsoft's APIs.
-
----
-
-## 2. Option A: Local On-Premises Deployment (Docker Compose)
-
-### Architecture
 ```mermaid
 flowchart TD
-    subgraph Local Server ["On-Premises Server / VM (Linux or Windows Server)"]
-        subgraph Docker ["Docker Environment"]
-            Portal["MPP Web Portal (FastAPI + React/HTML + OpenJDK/MPXJ)"]
-            DB[("PostgreSQL 16 (or SQLite volume)")]
+    subgraph HyperVHost ["Windows Server / Hyper-V Host"]
+        subgraph UbuntuVM ["Ubuntu Server 24.04 LTS VM (Gen 2)"]
+            UFW["UFW Firewall (Ports 22, 80, 443)"]
+            Nginx["NGINX Reverse Proxy (HTTP 80 / HTTPS 443)"]
+            subgraph Docker ["Docker Compose Stack (/opt/mpp-portal)"]
+                Backend["mpp-portal-backend (FastAPI + OpenJDK 17 / MPXJ)"]
+                Postgres[("mpp-portal-db (PostgreSQL 16)")]
+            end
+            Backup["Daily Cron Backup (/var/backups/mpp-portal)"]
+            UFW --> Nginx
+            Nginx -->|http://127.0.0.1:8000| Backend
+            Backend --> Postgres
+            Postgres --> Backup
         end
-        ReverseProxy["Internal Reverse Proxy (NGINX / IIS / Traefik)"]
-        ReverseProxy -->|http://localhost:8000| Portal
-        Portal --> DB
     end
 
-    Users["Company Users / PMs (LAN or VPN)"] --> ReverseProxy
-    Portal -->|Outbound HTTPS (Port 443)| Entra["Microsoft Entra ID (Graph API)"]
+    Users["PMs & Admins (Company LAN / VPN)"] -->|HTTPS / HTTP| UFW
+    Backend -->|Outbound HTTPS 443| Entra["Microsoft Entra ID (SSO & Graph API)"]
 ```
 
-### Setup Steps
-
-1. **Clone or Copy Repository:**
-   Copy the application directory to your server (e.g. `/opt/mpp-portal` or `C:\Services\mpp-portal`).
-
-2. **Configure Environment (`.env`):**
-   Create or update your `.env` file with your Azure App Registration credentials:
-   ```env
-   # Microsoft Entra ID
-   AZURE_AD_CLIENT_ID=your-client-id
-   AZURE_AD_TENANT_ID=your-tenant-id
-   AZURE_AD_CLIENT_SECRET=your-client-secret
-
-   # Security & Session
-   SECRET_KEY=generate-a-strong-random-key-here
-   ENVIRONMENT=production
-   ```
-
-3. **Start the Service:**
-   
-   * **With PostgreSQL (Recommended for multi-user production):**
-     ```bash
-     docker compose up -d --build
-     ```
-     This starts both PostgreSQL and the portal container with health checks and persistent volume storage (`postgres_data`).
-
-   * **With SQLite (Lightweight single-container setup):**
-     ```bash
-     docker compose -f docker-compose.sqlite.yml up -d --build
-     ```
-     Database file is persisted in `./data/mpp_hub.db`.
-
-4. **Verify Deployment:**
-   Check container logs and health:
-   ```bash
-   docker compose ps
-   docker compose logs -f backend
-   curl http://localhost:8000/health
-   ```
-   Open `http://<your-server-ip>:8000` in your browser.
+### Recommended Hyper-V VM Specifications
+| Resource | Recommended Specification | Notes |
+|---|---|---|
+| **OS** | **Ubuntu Server 24.04 LTS** (64-bit) | Minimal / Standard Server ISO |
+| **VM Generation** | **Generation 2** (UEFI) | Enable Secure Boot with **Microsoft UEFI Certificate Authority** template |
+| **vCPU** | **2 vCPUs** | 4 vCPUs if >30 concurrent PMs |
+| **Memory (RAM)** | **4 GB Fixed RAM** | Covers PostgreSQL 16 + FastAPI + JVM/MPXJ parser |
+| **Virtual Disk** | **40 GB Dynamic VHDX** | Stored on SSD/NVMe storage |
+| **Network** | **External Virtual Switch** (Static LAN IP) | Needs LAN visibility for users + outbound port `443` to `*.microsoftonline.com` and `graph.microsoft.com` |
 
 ---
 
-## 3. Reverse Proxy Configuration (HTTPS on Local Intranet)
+## 2. Step-by-Step Deployment
 
-To serve the portal securely under your internal domain (e.g., `https://mpp.garantgroup.eu`):
+### Step 1: Create the VM on the Hyper-V Host (Automated PowerShell)
+On your Windows Hyper-V Host, open **PowerShell as Administrator** and run the included [`deploy/Create-HyperV-LinuxVM.ps1`](deploy/Create-HyperV-LinuxVM.ps1) script:
 
-### NGINX Example (`/etc/nginx/sites-available/mpp.conf`):
-```nginx
-server {
-    listen 80;
-    server_name mpp.garantgroup.eu;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name mpp.garantgroup.eu;
-
-    ssl_certificate     /etc/ssl/certs/garantgroup.crt;
-    ssl_certificate_key /etc/ssl/private/garantgroup.key;
-
-    # Allow larger file uploads for MS Project .mpp files
-    client_max_body_size 50M;
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
+```powershell
+.\deploy\Create-HyperV-LinuxVM.ps1 `
+    -VMName "MPP-Web-Portal-VM" `
+    -SwitchName "Default Switch" `
+    -IsoPath "C:\ISOs\ubuntu-24.04.1-live-server-amd64.iso" `
+    -ProcessorCount 2 `
+    -MemoryStartupBytes 4GB `
+    -VHDSizeBytes 40GB
 ```
+*(Or create the Generation 2 VM manually in **Hyper-V Manager**, making sure under **Settings → Security** to change the Secure Boot template to **Microsoft UEFI Certificate Authority** so Ubuntu boots cleanly).*
 
-### Windows Server IIS Example:
-- Install **URL Rewrite** and **Application Request Routing (ARR)** modules.
-- Set up a Reverse Proxy rule forwarding incoming traffic to `http://127.0.0.1:8000`.
-
----
-
-## 4. Option B: Azure Cloud Deployment
-
-If you choose to run in Azure in the future:
-
-1. **Container Image:**
-   Build and push the Docker image to **Azure Container Registry (ACR)**:
-   ```bash
-   az acr build --registry <your-acr-name> --image mpp-portal:latest .
+### Step 2: Install Ubuntu Server LTS
+1. Start the VM and connect via Hyper-V Manager:
+   ```powershell
+   Start-VM -Name "MPP-Web-Portal-VM"
+   vmconnect.exe localhost "MPP-Web-Portal-VM"
    ```
+2. Complete the standard Ubuntu Server installation:
+   - Assign a **Static IP** on your corporate LAN (e.g., `192.168.x.x` or `10.x.x.x`) and optionally an internal DNS record (e.g., `mpp.garantgroup.local` or `mpp.garantgroup.eu`).
+   - Check **[x] Install OpenSSH server**.
+   - Do **not** select Docker inside the Ubuntu Snap installer screen (our setup script installs the official Docker Engine apt package).
 
-2. **Azure Container Apps:**
-   - Deploy as a Container App linked to ACR.
-   - Resource allocation: **0.5 vCPU, 1.0 GiB RAM** (sufficient for 10 PMs / 30 projects).
-   - Ingress: Enabled (Internal or External depending on your network setup).
+### Step 3: Run the One-Command Ubuntu Provisioning Script
+SSH into your new Ubuntu VM and run the automated installer [`deploy/ubuntu-vm-install.sh`](deploy/ubuntu-vm-install.sh):
 
-3. **Database:**
-   - Provision **Azure Database for PostgreSQL Flexible Server** (Burstable tier `B1ms`).
-   - Set environment variable:
-     ```env
-     DATABASE_URL=postgresql://<admin>:<password>@<server>.postgres.database.azure.com:5432/mpp_hub?sslmode=require
-     ```
-
-4. **Secrets:**
-   - Store `AZURE_AD_CLIENT_SECRET` in Azure Container Apps Secret Store or Azure Key Vault.
-
----
-
-## 5. Maintenance & Backup Strategy
-
-### Database Backup (Local On-Premises)
-
-* **PostgreSQL Backup (Daily Cron Job):**
-  ```bash
-  docker compose exec -t db pg_dump -U postgres mpp_hub > /backups/mpp_hub_$(date +%Y%m%d).sql
-  ```
-
-* **SQLite Backup:**
-  Simply back up the `./data/mpp_hub.db` file (e.g., via standard backup agent or scheduled copy).
-
-### Updating the Portal
-When new versions or features are pulled from Git:
 ```bash
-git pull origin main
-docker compose up -d --build
+git clone https://github.com/vkrasauskas/MPP_web_portal.git /tmp/mpp-setup
+sudo bash /tmp/mpp-setup/deploy/ubuntu-vm-install.sh
 ```
-Database tables and seeds are migrated automatically on startup.
+
+What this script configures automatically:
+1. Installs **Hyper-V Linux Integration Services** (`linux-cloud-tools-virtual`), **Docker Engine**, **Docker Compose v2**, **NGINX**, and **UFW Firewall**.
+2. Clones the portal repository to `/opt/mpp-portal`.
+3. Generates `/opt/mpp-portal/.env` (with `chmod 600` root-only permissions and auto-generated `SECRET_KEY` and `POSTGRES_PASSWORD`).
+4. Configures **NGINX** on ports `80` and `443` with a `50 MB` upload limit for `.mpp` project schedules.
+5. Installs the daily PostgreSQL backup job at `/etc/cron.daily/mpp-portal-backup` (saving compressed dumps to `/var/backups/mpp-portal/` with 30-day retention).
+6. Builds and launches `mpp-portal-backend` and `mpp-portal-db` containers with `restart: unless-stopped`.
+
+---
+
+## 3. Configure `.env` Secrets & Microsoft Entra ID Redirect URI
+
+### 1. Populate `/opt/mpp-portal/.env` on the Linux VM
+Edit `/opt/mpp-portal/.env` on the VM (this file is strictly local and never committed to Git):
+```bash
+sudo nano /opt/mpp-portal/.env
+```
+Verify/update your values:
+```env
+ENVIRONMENT=production
+SECRET_KEY=<auto-generated-hex-key>
+POSTGRES_PASSWORD=<auto-generated-db-password>
+
+# Mandatory Login & Emergency Onboarding User
+AUTH_ENABLED=true
+EMERGENCY_ADMIN_USERNAME=emergency_admin
+EMERGENCY_ADMIN_PASSWORD=Your_Strong_Emergency_Password_Here!
+
+# Microsoft Entra ID (Garant Group Tenant)
+AZURE_AD_TENANT_ID=2a1c1726-b03a-4784-b174-ef74d5fd411c
+AZURE_AD_CLIENT_ID=0541bc01-23e8-438a-88b7-7ca7f54d4850
+AZURE_AD_CLIENT_SECRET=<your-azure-client-secret>
+```
+Restart the backend container to apply the `.env` changes:
+```bash
+cd /opt/mpp-portal
+sudo docker compose restart backend
+```
+
+### 2. Add the VM URL to Azure App Registration Redirect URIs
+In **Microsoft Entra admin center / Azure Portal**:
+1. Go to **App registrations** $\rightarrow$ select your app $\rightarrow$ **Authentication**.
+2. Under **Web** $\rightarrow$ **Redirect URIs**, add the URL of your Hyper-V VM:
+   - `https://<vm-ip-or-domain>` (e.g. `https://mpp.garantgroup.eu` or `http://192.168.1.50`)
+3. Click **Save**.
+
+---
+
+## 4. First Login & Admin Onboarding Workflow
+
+1. Open `https://<vm-ip-or-domain>` in your browser.
+2. The **Full-Screen Login Gate** is presented as the mandatory first step (no application data is accessible without signing in).
+3. **First-Time Onboarding:**
+   - Sign in using the **Emergency Onboarding User** (`emergency_admin` + password from `/opt/mpp-portal/.env`).
+   - Open the **Portal Users & Access** tab $\rightarrow$ click **Grant User Access (Entra ID)** $\rightarrow$ add your Microsoft Entra ID account with the **Admin** role.
+   - Click **Sign Out**.
+4. **Standard Daily Login:**
+   - Click **Sign In with Microsoft Entra ID (SSO)** to log in with your Garant Group Microsoft account.
+
+---
+
+## 5. Day-2 Operations, Updates & Backups
+
+### Updating the Portal to a New Version
+```bash
+cd /opt/mpp-portal
+sudo git pull origin main
+sudo docker compose up -d --build
+```
+
+### Checking Logs & Container Status
+```bash
+cd /opt/mpp-portal
+sudo docker compose ps
+sudo docker compose logs -f backend
+```
+
+### Database Backup & Restore
+- **Manual Backup Now:**
+  ```bash
+  sudo /etc/cron.daily/mpp-portal-backup
+  ls -lh /var/backups/mpp-portal/
+  ```
+- **Restore from a Backup:**
+  ```bash
+  cd /opt/mpp-portal
+  gunzip -c /var/backups/mpp-portal/mpp_hub_YYYYMMDD_HHMMSS.sql.gz | sudo docker compose exec -T db psql -U postgres -d mpp_hub
+  ```

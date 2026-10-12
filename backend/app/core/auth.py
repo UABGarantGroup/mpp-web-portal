@@ -27,6 +27,22 @@ class CurrentUser(BaseModel):
         return any(role in self.roles for role in required_roles)
 
 
+def create_emergency_token(username: str) -> str:
+    """Creates a signed JWT token for the Emergency / Onboarding Admin user."""
+    import jwt
+    from datetime import datetime, timedelta, timezone
+
+    payload = {
+        "sub": username,
+        "email": username,
+        "name": "Emergency Onboarding Admin",
+        "roles": ["Admin"],
+        "auth_type": "EMERGENCY",
+        "exp": datetime.now(timezone.utc) + timedelta(hours=12),
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
+
+
 def get_current_user(
     authorization: Optional[HTTPAuthorizationCredentials] = Depends(security),
     x_user_role: Optional[str] = Header(None, alias="X-User-Role"),
@@ -36,31 +52,53 @@ def get_current_user(
     """
     Resolves the current authenticated user.
     Supports:
-    1. Entra ID JWT Bearer token (SSO login with MSAL.js)
-    2. Initial Admin bootstrapping (INITIAL_ADMIN_EMAIL or first-user admin setup)
+    1. Emergency / Onboarding Admin JWT token (credentials stored in .env)
+    2. Entra ID JWT Bearer token (SSO login with MSAL.js)
     3. Least-privilege check: minimum role required to log in is PM
-    4. Development header fallback when no bearer token is supplied
+    4. Strict 401 rejection when AUTH_ENABLED=True and no valid Bearer token is provided
     """
     from backend.app.db.models import PortalUserDB
 
-    # 1. Bearer Token SSO Flow (Entra ID JWT)
+    # 1. Bearer Token Flow (Emergency Admin JWT or Entra ID SSO JWT)
     if authorization and authorization.credentials:
         token = authorization.credentials
         try:
             import jwt
+
+            # 1a. Check if token is a locally-signed Emergency Admin token
+            try:
+                verified_local = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+                if verified_local.get("auth_type") == "EMERGENCY":
+                    uname = verified_local.get("sub") or settings.EMERGENCY_ADMIN_USERNAME
+                    return CurrentUser(
+                        username=uname,
+                        email=uname,
+                        display_name=verified_local.get("name", "Emergency Onboarding Admin"),
+                        roles=["Admin"],
+                    )
+            except Exception:
+                pass
+
+            # 1b. Decode Entra ID SSO JWT claims
             unverified_claims = jwt.decode(token, options={"verify_signature": False})
             email = (
                 unverified_claims.get("preferred_username")
                 or unverified_claims.get("upn")
                 or unverified_claims.get("email")
-                or "user@enterprise.com"
-            ).lower()
+                or ""
+            ).strip().lower()
+            if not email:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token does not contain a valid user email or UPN claim.",
+                )
+
             name_claim = unverified_claims.get("name") or email.split("@")[0].replace(".", " ").title()
             token_roles = unverified_claims.get("roles", [])
 
             p_user = db.query(PortalUserDB).filter(PortalUserDB.email.ilike(email)).first()
 
-            # Onboarding check 1: Match INITIAL_ADMIN_EMAIL
+            # Optional INITIAL_ADMIN_EMAIL match if configured in .env
             if not p_user and settings.INITIAL_ADMIN_EMAIL and settings.INITIAL_ADMIN_EMAIL.strip().lower() == email:
                 p_user = PortalUserDB(
                     email=email,
@@ -73,29 +111,14 @@ def get_current_user(
                 db.commit()
                 db.refresh(p_user)
 
-            # Onboarding check 2: No active Admin exists in database
-            if not p_user:
-                has_admin = db.query(PortalUserDB).filter(PortalUserDB.role == "Admin", PortalUserDB.is_active == True).first()
-                if not has_admin:
-                    p_user = PortalUserDB(
-                        email=email,
-                        display_name=f"{name_claim} (Initial Admin)",
-                        role="Admin",
-                        is_active=True,
-                        source="INITIAL_SETUP",
-                    )
-                    db.add(p_user)
-                    db.commit()
-                    db.refresh(p_user)
-
             if not p_user:
                 if "Admin" in token_roles:
                     return CurrentUser(username=email.split("@")[0], email=email, display_name=name_claim, roles=["Admin"])
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=(
-                        f"Access denied for '{email}'. Your Microsoft Entra ID account has not been authorized to access this portal. "
-                        f"Please contact an Administrator to be added with a Project Manager (PM) or Admin role."
+                        f"Access denied for '{email}'. Your Microsoft Entra ID account has not been onboarded to this portal. "
+                        f"Please sign in with the Emergency Onboarding Admin account or contact an Administrator to grant you PM or Admin access."
                     ),
                 )
 
@@ -127,7 +150,15 @@ def get_current_user(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-    # 2. Development / Local Bypass (when no bearer token is present)
+    # 2. Enforce mandatory login when AUTH_ENABLED is True
+    if settings.AUTH_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required. Please sign in to access application data.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # 3. Test / Development Bypass (only when AUTH_ENABLED=False)
     email = (x_user_email or "admin@enterprise.com").lower()
     p_user = db.query(PortalUserDB).filter(PortalUserDB.email.ilike(email)).first()
     if p_user:
@@ -137,7 +168,6 @@ def get_current_user(
         role = x_user_role or "Admin"
         dname = email.split("@")[0].replace(".", " ").title()
 
-    # Least privilege check in dev mode as well if specified as PM
     return CurrentUser(
         username=email.split("@")[0],
         email=email,
