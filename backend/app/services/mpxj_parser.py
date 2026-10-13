@@ -53,10 +53,8 @@ def _init_mpxj():
                 except Exception as e:
                     logger.debug("jpype.getDefaultJVMPath() exception: %s", e)
 
-        if jvm_path and os.path.exists(jvm_path):
-            # Windows-specific preloading for Java AWT / graphics libraries
+            # Windows-specific DLL directory discovery for Java runtime
             if os.name == "nt":
-                import ctypes
                 jvm_bin_dir = os.path.abspath(os.path.join(os.path.dirname(jvm_path), ".."))
                 if hasattr(os, "add_dll_directory"):
                     try:
@@ -66,14 +64,6 @@ def _init_mpxj():
                         pass
                 if jvm_bin_dir not in os.environ.get("PATH", ""):
                     os.environ["PATH"] = jvm_bin_dir + os.pathsep + os.environ.get("PATH", "")
-
-                for dll_name in [jvm_path, "java.dll", "verify.dll", "awt.dll"]:
-                    try:
-                        dll_target = dll_name if os.path.isabs(dll_name) else os.path.join(jvm_bin_dir, dll_name)
-                        if os.path.exists(dll_target):
-                            ctypes.CDLL(dll_target)
-                    except Exception as e:
-                        logger.debug("Preload dll %s notice: %s", dll_name, e)
 
             jpype.startJVM(
                 jvm_path,
