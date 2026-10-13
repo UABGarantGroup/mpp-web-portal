@@ -508,6 +508,112 @@
     </div>
   </div>
 
+  <!-- Edit Resource Rates Modal (Tables A–E) -->
+  <div id="edit-rates-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="width: 680px;">
+      <div class="modal-header">
+        <h3 id="edit-rates-modal-title"><i class="fa-solid fa-file-invoice-dollar" style="color:var(--primary);"></i> Edit Resource Rates (Tables A–E)</h3>
+        <button style="border:none;background:none;font-size:1.2rem;cursor:pointer;" onclick="closeEditRatesModal()">&times;</button>
+      </div>
+      <p style="font-size:0.83rem; color:var(--text-muted); margin-bottom:1rem;">
+        Configure hourly rates in Microsoft Project Rate Tables (<strong>A through E</strong>) for <strong id="edit-rates-res-name">Resource</strong>.
+      </p>
+      <input type="hidden" id="edit-rates-res-id">
+
+      <div style="display: flex; flex-direction: column; gap: 0.85rem; max-height: 58vh; overflow-y: auto; padding-right: 0.25rem;">
+        <!-- Table A -->
+        <div style="background:#faf9f8; border:1px solid #edebe9; border-radius:6px; padding:0.75rem;">
+          <div style="font-weight:600; font-size:0.85rem; color:#004578; margin-bottom:0.4rem;">
+            Table A: Standard Rate (Default / Internal Cost)
+          </div>
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem;">
+            <div class="form-group">
+              <label style="font-size:0.78rem;">Standard Rate (€/h) *</label>
+              <input type="number" id="rate-std-A" step="0.01" min="0" placeholder="0.00" style="padding:0.35rem; font-size:0.85rem;">
+            </div>
+            <div class="form-group">
+              <label style="font-size:0.78rem;">Overtime Rate (€/h)</label>
+              <input type="number" id="rate-ot-A" step="0.01" min="0" placeholder="0.00" style="padding:0.35rem; font-size:0.85rem;">
+            </div>
+          </div>
+        </div>
+
+        <!-- Table B -->
+        <div style="background:#faf9f8; border:1px solid #edebe9; border-radius:6px; padding:0.75rem;">
+          <div style="font-weight:600; font-size:0.85rem; color:#323130; margin-bottom:0.4rem;">
+            Table B: Secondary Rate (Overtime / Senior)
+          </div>
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem;">
+            <div class="form-group">
+              <label style="font-size:0.78rem;">Standard Rate (€/h)</label>
+              <input type="number" id="rate-std-B" step="0.01" min="0" placeholder="0.00" style="padding:0.35rem; font-size:0.85rem;">
+            </div>
+            <div class="form-group">
+              <label style="font-size:0.78rem;">Overtime Rate (€/h)</label>
+              <input type="number" id="rate-ot-B" step="0.01" min="0" placeholder="0.00" style="padding:0.35rem; font-size:0.85rem;">
+            </div>
+          </div>
+        </div>
+
+        <!-- Table C -->
+        <div style="background:#faf9f8; border:1px solid #edebe9; border-radius:6px; padding:0.75rem;">
+          <div style="font-weight:600; font-size:0.85rem; color:#323130; margin-bottom:0.4rem;">
+            Table C: Commercial / Customer Billable Rate
+          </div>
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem;">
+            <div class="form-group">
+              <label style="font-size:0.78rem;">Standard Rate (€/h)</label>
+              <input type="number" id="rate-std-C" step="0.01" min="0" placeholder="0.00" style="padding:0.35rem; font-size:0.85rem;">
+            </div>
+            <div class="form-group">
+              <label style="font-size:0.78rem;">Overtime Rate (€/h)</label>
+              <input type="number" id="rate-ot-C" step="0.01" min="0" placeholder="0.00" style="padding:0.35rem; font-size:0.85rem;">
+            </div>
+          </div>
+        </div>
+
+        <!-- Table D -->
+        <div style="background:#faf9f8; border:1px solid #edebe9; border-radius:6px; padding:0.75rem;">
+          <div style="font-weight:600; font-size:0.85rem; color:#605e5c; margin-bottom:0.4rem;">
+            Table D: Special Project Rate
+          </div>
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem;">
+            <div class="form-group">
+              <label style="font-size:0.78rem;">Standard Rate (€/h)</label>
+              <input type="number" id="rate-std-D" step="0.01" min="0" placeholder="0.00" style="padding:0.35rem; font-size:0.85rem;">
+            </div>
+            <div class="form-group">
+              <label style="font-size:0.78rem;">Overtime Rate (€/h)</label>
+              <input type="number" id="rate-ot-D" step="0.01" min="0" placeholder="0.00" style="padding:0.35rem; font-size:0.85rem;">
+            </div>
+          </div>
+        </div>
+
+        <!-- Table E -->
+        <div style="background:#faf9f8; border:1px solid #edebe9; border-radius:6px; padding:0.75rem;">
+          <div style="font-weight:600; font-size:0.85rem; color:#605e5c; margin-bottom:0.4rem;">
+            Table E: Weekend / Emergency Rate
+          </div>
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem;">
+            <div class="form-group">
+              <label style="font-size:0.78rem;">Standard Rate (€/h)</label>
+              <input type="number" id="rate-std-E" step="0.01" min="0" placeholder="0.00" style="padding:0.35rem; font-size:0.85rem;">
+            </div>
+            <div class="form-group">
+              <label style="font-size:0.78rem;">Overtime Rate (€/h)</label>
+              <input type="number" id="rate-ot-E" step="0.01" min="0" placeholder="0.00" style="padding:0.35rem; font-size:0.85rem;">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeEditRatesModal()">Cancel</button>
+        <button class="btn" onclick="saveResourceRates()"><i class="fa-solid fa-floppy-disk"></i> Save Rates</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Excel/CSV Import Modal -->
   <div id="import-modal" class="modal-overlay" style="display: none;">
     <div class="modal-content" style="width: 650px;">
@@ -1454,7 +1560,7 @@
     }
 
     function formatNumber(num) {
-      return (Number(num) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return Math.round(Number(num) || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
     }
 
     function filterPortfolio() {
@@ -1848,6 +1954,7 @@
         fetch("/api/calendars?include_inactive=true", { headers: getAuthHeaders() })
       ]);
       const resources = await resResp.json();
+      allResources = resources;
       const calendars = await calResp.json();
       allCalendars = calendars;
       const tbody = document.getElementById("resources-tbody");
@@ -1874,17 +1981,84 @@
               ${calOptions}
             </select>
           </td>
-          <td class="currency">${rateA ? '€' + rateA.standard_rate.toFixed(2) + '/h' : '--'}</td>
-          <td class="currency">${rateB ? '€' + rateB.standard_rate.toFixed(2) + '/h' : '--'}</td>
-          <td class="currency">${rateC ? '€' + rateC.standard_rate.toFixed(2) + '/h' : '--'}</td>
+          <td class="currency" style="cursor:pointer;" onclick="openEditRatesModal(${r.id})" title="Click to edit rates">${rateA ? '€' + rateA.standard_rate.toFixed(2) + '/h' : '<span style="color:var(--text-muted);">--</span>'}</td>
+          <td class="currency" style="cursor:pointer;" onclick="openEditRatesModal(${r.id})" title="Click to edit rates">${rateB ? '€' + rateB.standard_rate.toFixed(2) + '/h' : '<span style="color:var(--text-muted);">--</span>'}</td>
+          <td class="currency" style="cursor:pointer;" onclick="openEditRatesModal(${r.id})" title="Click to edit rates">${rateC ? '€' + rateC.standard_rate.toFixed(2) + '/h' : '<span style="color:var(--text-muted);">--</span>'}</td>
           <td>${r.is_active ? '<span style="color:var(--status-done);">● Active</span>' : '<span style="color:var(--status-not-done);">Deactivated</span>'}</td>
-          <td class="text-center">
-            ${r.is_active ? `<button class="btn btn-sm btn-secondary" onclick="softDeleteResource(${r.id})">Deactivate</button>` : '--'}
+          <td class="text-center" style="white-space:nowrap;">
+            <div style="display:inline-flex; gap:0.35rem; align-items:center;">
+              <button class="btn btn-sm btn-secondary" onclick="openEditRatesModal(${r.id})" title="Edit Rate Tables A–E" style="padding:0.2rem 0.45rem; font-size:0.75rem;"><i class="fa-solid fa-pen-to-square"></i> Rates</button>
+              ${r.is_active ? `<button class="btn btn-sm btn-secondary" onclick="softDeleteResource(${r.id})" title="Deactivate resource" style="padding:0.2rem 0.45rem; font-size:0.75rem;">Deactivate</button>` : '--'}
+            </div>
           </td>
         `;
         tbody.appendChild(tr);
       });
       filterResourcePoolTable();
+    }
+
+    function openEditRatesModal(resId) {
+      const res = (allResources || []).find(r => r.id === resId);
+      if (!res) return;
+
+      document.getElementById("edit-rates-res-id").value = resId;
+      document.getElementById("edit-rates-res-name").textContent = `${res.name} (${res.department || 'General'})`;
+
+      ["A", "B", "C", "D", "E"].forEach(tbl => {
+        const rp = (res.rates || []).find(r => r.rate_table === tbl);
+        document.getElementById(`rate-std-${tbl}`).value = (rp && rp.standard_rate != null) ? rp.standard_rate : "";
+        document.getElementById(`rate-ot-${tbl}`).value = (rp && rp.overtime_rate != null) ? rp.overtime_rate : "";
+      });
+
+      document.getElementById("edit-rates-modal").style.display = "flex";
+    }
+
+    function closeEditRatesModal() {
+      document.getElementById("edit-rates-modal").style.display = "none";
+    }
+
+    async function saveResourceRates() {
+      const resId = parseInt(document.getElementById("edit-rates-res-id").value);
+      if (!resId) return;
+
+      const ratePayload = [];
+      ["A", "B", "C", "D", "E"].forEach(tbl => {
+        const stdInput = document.getElementById(`rate-std-${tbl}`).value.trim();
+        const otInput = document.getElementById(`rate-ot-${tbl}`).value.trim();
+        if (stdInput !== "") {
+          const stdVal = parseFloat(stdInput);
+          const otVal = parseFloat(otInput);
+          if (!isNaN(stdVal) && stdVal >= 0) {
+            ratePayload.push({
+              rate_table: tbl,
+              standard_rate: stdVal,
+              overtime_rate: (!isNaN(otVal) && otVal >= 0) ? otVal : 0.0,
+              cost_per_use: 0.0
+            });
+          }
+        }
+      });
+
+      try {
+        const resp = await fetch(`/api/resources/${resId}/rates`, {
+          method: "PUT",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify(ratePayload)
+        });
+
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ detail: "Failed to update rates" }));
+          alert("Permission error: " + (err.detail || "Only Finance Managers or Admins can update rates"));
+          return;
+        }
+
+        closeEditRatesModal();
+        alert("Resource rates updated successfully!");
+        loadResources();
+      } catch (err) {
+        console.error("Save rates error:", err);
+        alert("Failed to save rates: " + err.message);
+      }
     }
 
     async function updateResourceCalendar(resId, calId) {

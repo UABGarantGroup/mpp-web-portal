@@ -881,7 +881,7 @@ def update_resource_rates(
     resource_id: int,
     rates: List[CostRateItem],
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(require_roles(["FinanceManager", "Admin"])),
+    user: CurrentUser = Depends(require_roles(["FinanceManager", "Admin", "ResourceManager"])),
 ):
     res = db.query(ResourceDB).filter(ResourceDB.id == resource_id).first()
     if not res:
