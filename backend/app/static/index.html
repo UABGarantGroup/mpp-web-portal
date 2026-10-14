@@ -1391,11 +1391,18 @@
         tableHead.appendChild(th);
       });
 
+      // Append Actions column header as the terminal column
+      const thActions = document.createElement("th");
+      thActions.style.minWidth = "210px";
+      thActions.className = "text-center";
+      thActions.textContent = "Actions";
+      tableHead.appendChild(thActions);
+
       const tbody = document.getElementById("portfolio-tbody");
       tbody.innerHTML = "";
 
       if (!data.groups || data.groups.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="${12 + stageColumns.length}" class="text-center" style="padding:2rem;">No projects found. Click 'Create New Project' to start.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="${13 + stageColumns.length}" class="text-center" style="padding:2rem;">No projects found. Click 'Create New Project' to start.</td></tr>`;
         return;
       }
 
@@ -1423,6 +1430,8 @@
         stageColumns.forEach(() => {
           groupCells += `<td></td>`;
         });
+        // Empty cell for terminal Actions column in summary row
+        groupCells += `<td class="text-center">--</td>`;
         trGroup.innerHTML = groupCells;
         tbody.appendChild(trGroup);
 
@@ -1448,25 +1457,11 @@
 
           let projCells = `
             <td>
-              <div style="display:flex; flex-direction:column; gap:0.25rem;">
-                <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
-                  <span style="font-weight:600; color:var(--accent); cursor:pointer;" onclick="editProjectBudget(${p.id}, '${safeErpAttr}', ${p.budget_cost})">
-                    ${safeNameHtml}
-                  </span>
-                  ${statusBadge}
-                </div>
-                <div style="display:flex; align-items:center; gap:0.35rem; margin-top:0.15rem; flex-wrap:wrap;">
-                  <button class="btn btn-sm" onclick="downloadTemplateForProject(${p.id})" title="Download MS Project XML Template (${safeErpHtml})" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
-                    <i class="fa-solid fa-download"></i> .XML
-                  </button>
-                  <button class="btn btn-sm btn-secondary" onclick="openUploadScheduleModal(${p.id})" title="Upload .mpp / .xml for ${safeErpHtml}" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
-                    <i class="fa-solid fa-upload"></i> Upload
-                  </button>
-                  <button class="btn btn-sm btn-secondary" onclick="openRefreshWizard(${p.id})" title="Refresh rates/holidays for ${safeErpHtml}" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
-                    <i class="fa-solid fa-arrows-rotate"></i> Refresh
-                  </button>
-                  ${statusActionBtn}
-                </div>
+              <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+                <span style="font-weight:600; color:var(--accent); cursor:pointer;" onclick="editProjectBudget(${p.id}, '${safeErpAttr}', ${p.budget_cost})" title="Click to edit budget (${safeErpHtml})">
+                  ${safeNameHtml}
+                </span>
+                ${statusBadge}
               </div>
             </td>
             <td class="text-center">${p.percent_complete}%</td>
@@ -1497,6 +1492,24 @@
               </td>
             `;
           });
+
+          // Terminal Actions Column
+          projCells += `
+            <td class="text-center" style="white-space:nowrap;">
+              <div style="display:flex; align-items:center; justify-content:center; gap:0.35rem; flex-wrap:wrap;">
+                <button class="btn btn-sm" onclick="downloadTemplateForProject(${p.id})" title="Download MS Project XML Template (${safeErpHtml})" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
+                  <i class="fa-solid fa-download"></i> .XML
+                </button>
+                <button class="btn btn-sm btn-secondary" onclick="openUploadScheduleModal(${p.id})" title="Upload .mpp / .xml for ${safeErpHtml}" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
+                  <i class="fa-solid fa-upload"></i> Upload
+                </button>
+                <button class="btn btn-sm btn-secondary" onclick="openRefreshWizard(${p.id})" title="Refresh rates/holidays for ${safeErpHtml}" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
+                  <i class="fa-solid fa-arrows-rotate"></i> Refresh
+                </button>
+                ${statusActionBtn}
+              </div>
+            </td>
+          `;
 
           trProj.innerHTML = projCells;
           tbody.appendChild(trProj);
