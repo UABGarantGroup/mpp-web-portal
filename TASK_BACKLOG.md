@@ -21,3 +21,4 @@
 - [x] Refactor project list: move export (.XML), upload, refresh, and close/reopen buttons to a dedicated terminal Actions column.
 - [x] Project owner selection from portal users in project template creation & Admin project ownership transfer endpoint and modal UI.
 - [x] Align Baseline Cost, Budget Cost, and Baseline Budget Cost parsing and snapshot calculation with Microsoft Project logic during schedule upload action.
+- [x] Microsoft SQL Server migration engine, dialect abstraction (pyodbc/pymssql), container compose (`docker-compose.mssql.yml`), and automated data transfer utility (`backend/app/scripts/migrate_to_mssql.py`).

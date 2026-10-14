@@ -15,7 +15,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 from backend.app.core.config import settings
-from backend.app.db.session import Base
+from backend.app.db.session import Base, configure_engine
 from backend.app.db import models  # Ensures all models are registered
 
 target_metadata = Base.metadata
@@ -58,11 +58,7 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    connectable = configure_engine()
 
     with connectable.connect() as connection:
         context.configure(
