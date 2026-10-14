@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "sqlite:///./mpp_hub.db"
 
+    # Microsoft SQL Server Configuration (Optional: auto-builds DATABASE_URL if MSSQL_HOST is set)
+    MSSQL_HOST: str = ""       # e.g., "192.168.1.100", "sqlserver.corp.local", or "SRV-SQL01\SQLEXPRESS"
+    MSSQL_PORT: int = 1433
+    MSSQL_DATABASE: str = "mpp_hub"
+    MSSQL_USER: str = ""       # e.g., "sa" or "mpp_user"
+    MSSQL_PASSWORD: str = ""
+    MSSQL_TRUSTED_CONNECTION: bool = False  # Set True for Windows Authentication
+    MSSQL_DRIVER: str = "ODBC Driver 18 for SQL Server"
+
     # Microsoft Entra ID (Azure AD)
     AZURE_AD_CLIENT_ID: str = ""
     AZURE_AD_TENANT_ID: str = ""
@@ -52,7 +61,23 @@ class Settings(BaseSettings):
     )
 
     @model_validator(mode="after")
-    def enforce_production_security(self) -> "Settings":
+    def process_settings(self) -> "Settings":
+        # Auto-construct MSSQL DATABASE_URL if MSSQL_HOST is specified and DATABASE_URL is default
+        if self.MSSQL_HOST and self.DATABASE_URL == "sqlite:///./mpp_hub.db":
+            import urllib.parse
+            if self.MSSQL_TRUSTED_CONNECTION:
+                driver_clean = self.MSSQL_DRIVER.replace(" ", "+")
+                self.DATABASE_URL = (
+                    f"mssql+pyodbc://@{self.MSSQL_HOST}:{self.MSSQL_PORT}/{self.MSSQL_DATABASE}"
+                    f"?driver={driver_clean}&trusted_connection=yes&TrustServerCertificate=yes"
+                )
+            else:
+                user_enc = urllib.parse.quote_plus(self.MSSQL_USER)
+                pwd_enc = urllib.parse.quote_plus(self.MSSQL_PASSWORD)
+                self.DATABASE_URL = (
+                    f"mssql+pymssql://{user_enc}:{pwd_enc}@{self.MSSQL_HOST}:{self.MSSQL_PORT}/{self.MSSQL_DATABASE}"
+                )
+
         if self.ENVIRONMENT.strip().lower() == "production":
             # Never allow unauthenticated dev bypass in production
             self.AUTH_ENABLED = True
