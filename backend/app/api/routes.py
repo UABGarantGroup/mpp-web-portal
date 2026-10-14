@@ -2169,10 +2169,11 @@ def import_portal_users_from_group(
     resources_skipped = 0
     details = []
 
-    # If selected_emails specified, filter members
+    # If selected_emails specified, filter members (matching against either normalized email or upn)
+    selected_set = {e.strip().lower() for e in req.selected_emails} if req.selected_emails else set()
     target_members = [
         m for m in members
-        if not req.selected_emails or m["email"].lower() in [e.lower() for e in req.selected_emails]
+        if not selected_set or m["email"].strip().lower() in selected_set or (m.get("upn") and m["upn"].strip().lower() in selected_set)
     ]
 
     for m in target_members:

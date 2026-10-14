@@ -157,3 +157,65 @@ def test_manage_portal_user_roles_and_deactivation(client, db_session):
     # User should now be inactive
     p_user = db_session.query(PortalUserDB).filter(PortalUserDB.id == user_id).first()
     assert p_user.is_active is False
+
+
+def test_get_group_members_pagination_and_full_import(client, monkeypatch):
+    """
+    Verify that get_group_members traverses all pages via @odata.nextLink,
+    ensuring that groups with many members are imported completely without cutoff.
+    """
+    from unittest.mock import MagicMock
+    from backend.app.services.entra_graph import entra_graph_service
+
+    # Mock token acquisition
+    monkeypatch.setattr(entra_graph_service, "_acquire_token", lambda: "fake-mock-token")
+
+    page_1_data = {
+        "@odata.nextLink": "https://graph.microsoft.com/v1.0/groups/mock-grp-large/transitiveMembers?$skiptoken=page2",
+        "value": [
+            {"id": f"usr-p1-{i}", "displayName": f"User P1 {i}", "mail": f"p1_{i}@garantgroup.eu", "userPrincipalName": f"p1_{i}@garantgroup.eu", "jobTitle": "Tech", "department": "Service"}
+            for i in range(1, 4)
+        ]
+    }
+    page_2_data = {
+        "value": [
+            {"id": f"usr-p2-{i}", "displayName": f"User P2 {i}", "mail": f"p2_{i}@garantgroup.eu", "userPrincipalName": f"p2_{i}@garantgroup.eu", "jobTitle": "Engineer", "department": "Workshop"}
+            for i in range(1, 4)
+        ]
+    }
+
+    import httpx
+    original_get = httpx.Client.get
+
+    def mock_get(self, url, *args, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        if "page2" in url:
+            resp.json.return_value = page_2_data
+        else:
+            resp.json.return_value = page_1_data
+        return resp
+
+    monkeypatch.setattr(httpx.Client, "get", mock_get)
+
+    # 1. Test get_group_members directly
+    members = entra_graph_service.get_group_members("mock-grp-large")
+    assert len(members) == 6
+    assert any(m["email"] == "p1_1@garantgroup.eu" for m in members)
+    assert any(m["email"] == "p2_3@garantgroup.eu" for m in members)
+
+    # 2. Test import via API endpoint with both pages included
+    headers = {"X-User-Role": "Admin", "X-User-Email": "admin@enterprise.com"}
+    payload = {
+        "group_id": "mock-grp-large",
+        "group_name": "Large Security Group",
+        "target": "USERS",
+        "user_role": "PM",
+        "default_calendar_id": 1,
+        "default_rate": 0.0,
+    }
+    import_resp = client.post("/api/users/import-group", json=payload, headers=headers)
+    assert import_resp.status_code == 200
+    res = import_resp.json()
+    assert res["total_members"] == 6
+    assert res["users_added"] == 6
