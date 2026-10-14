@@ -71,29 +71,29 @@ def _ensure_schema_columns() -> None:
             cal_cols = {c["name"] for c in inspector.get_columns("calendars")}
             with engine.begin() as conn:
                 if "hours_per_day" not in cal_cols:
-                    conn.execute(text("ALTER TABLE calendars ADD COLUMN hours_per_day FLOAT NOT NULL DEFAULT 8.0"))
+                    conn.execute(text("ALTER TABLE calendars ADD hours_per_day FLOAT NOT NULL DEFAULT 8.0"))
                 if "hours_per_week" not in cal_cols:
-                    conn.execute(text("ALTER TABLE calendars ADD COLUMN hours_per_week FLOAT NOT NULL DEFAULT 40.0"))
+                    conn.execute(text("ALTER TABLE calendars ADD hours_per_week FLOAT NOT NULL DEFAULT 40.0"))
                 if "days_per_month" not in cal_cols:
-                    conn.execute(text("ALTER TABLE calendars ADD COLUMN days_per_month INTEGER NOT NULL DEFAULT 20"))
+                    conn.execute(text("ALTER TABLE calendars ADD days_per_month INTEGER NOT NULL DEFAULT 20"))
 
         if "calendar_exceptions" in table_names:
             exc_cols = {c["name"] for c in inspector.get_columns("calendar_exceptions")}
             with engine.begin() as conn:
                 if "shift1_from" not in exc_cols:
-                    conn.execute(text("ALTER TABLE calendar_exceptions ADD COLUMN shift1_from VARCHAR(8)"))
+                    conn.execute(text("ALTER TABLE calendar_exceptions ADD shift1_from VARCHAR(8)"))
                 if "shift1_to" not in exc_cols:
-                    conn.execute(text("ALTER TABLE calendar_exceptions ADD COLUMN shift1_to VARCHAR(8)"))
+                    conn.execute(text("ALTER TABLE calendar_exceptions ADD shift1_to VARCHAR(8)"))
                 if "shift2_from" not in exc_cols:
-                    conn.execute(text("ALTER TABLE calendar_exceptions ADD COLUMN shift2_from VARCHAR(8)"))
+                    conn.execute(text("ALTER TABLE calendar_exceptions ADD shift2_from VARCHAR(8)"))
                 if "shift2_to" not in exc_cols:
-                    conn.execute(text("ALTER TABLE calendar_exceptions ADD COLUMN shift2_to VARCHAR(8)"))
+                    conn.execute(text("ALTER TABLE calendar_exceptions ADD shift2_to VARCHAR(8)"))
 
         if "resources" in table_names:
             res_cols = {c["name"] for c in inspector.get_columns("resources")}
             with engine.begin() as conn:
                 if "base_calendar_id" not in res_cols:
-                    conn.execute(text("ALTER TABLE resources ADD COLUMN base_calendar_id INTEGER NOT NULL DEFAULT 1"))
+                    conn.execute(text("ALTER TABLE resources ADD base_calendar_id INTEGER NOT NULL DEFAULT 1"))
     except Exception as e:
         print("Schema column check notice:", e)
 
