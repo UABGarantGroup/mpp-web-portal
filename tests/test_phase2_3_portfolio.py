@@ -220,3 +220,52 @@ def test_export_project_template_xml(client):
     b_cost = assignment_0.find("ms:BudgetCost", ns)
     assert b_cost is not None
     assert float(b_cost.text) == pytest.approx(proj["budget_cost"], 0.01)
+
+
+def test_transfer_project_owner(client):
+    # Fetch existing project
+    projs = client.get("/api/projects").json()
+    assert len(projs) > 0
+    proj_id = projs[0]["id"]
+    original_owner = projs[0]["owner"]
+
+    # 1. Non-admin (PM) attempt should fail with 403 Forbidden
+    resp_pm = client.put(
+        f"/api/projects/{proj_id}/transfer",
+        json={"new_owner": "Domas Krupavicius"},
+        headers={"X-User-Role": "PM", "X-User-Email": "pm@garant.eu"}
+    )
+    assert resp_pm.status_code == 403
+
+    # 2. Transfer to unknown / non-existent user should return 400 Bad Request
+    resp_bad = client.put(
+        f"/api/projects/{proj_id}/transfer",
+        json={"new_owner": "NonExistent UserXYZ"},
+        headers={"X-User-Role": "Admin", "X-User-Email": "admin@enterprise.com"}
+    )
+    assert resp_bad.status_code == 400
+    assert "not an active portal user" in resp_bad.json()["detail"]
+
+    # 3. Successful transfer by Admin to active portal user
+    users_resp = client.get("/api/users", headers={"X-User-Role": "Admin", "X-User-Email": "admin@enterprise.com"})
+    assert users_resp.status_code == 200
+    users = users_resp.json()
+    assert len(users) > 0
+    target_user = users[0]
+    target_owner = target_user["display_name"]
+
+    resp_ok = client.put(
+        f"/api/projects/{proj_id}/transfer",
+        json={"new_owner": target_owner},
+        headers={"X-User-Role": "Admin", "X-User-Email": "admin@enterprise.com"}
+    )
+    assert resp_ok.status_code == 200
+    data = resp_ok.json()
+    assert data["project_id"] == proj_id
+    assert data["owner"] == target_owner
+
+    # 4. Verify project details reflect new owner
+    get_resp = client.get(f"/api/projects/{proj_id}")
+    assert get_resp.status_code == 200
+    assert get_resp.json()["owner"] == target_owner
+

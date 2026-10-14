@@ -32,9 +32,11 @@
    - Holiday and vacation exceptions (`DayWorking=0` / `DayWorking=1`) using `holidays` library.
 4. **Template Export & Schema Generator:**
    - Generates compliant MS Project XML templates containing injected resources, cost tables, extended attributes (`Text1-Text30`, `Cost1-Cost10`, `Flag1-Flag20`), and base calendars.
-5. **Authentication Gate:**
+5. **Authentication Gate & Portfolio Governance:**
    - Mandatory login gate via Microsoft Entra ID SSO.
    - Emergency fallback admin user (`emergency_admin`).
+   - Project template creation selects project owner exclusively from active portal users.
+   - Admin-exclusive project ownership transfer (`PUT /api/projects/{id}/transfer`) with audit trail.
 
 ---
 

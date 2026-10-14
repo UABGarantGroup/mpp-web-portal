@@ -62,6 +62,7 @@ from backend.app.models.schemas import (
     PortalUserModel,
     PortalUserUpdate,
     ProjectTemplateRequest,
+    ProjectTransferRequest,
     ResourceAddByEmailRequest,
     ResourceModel,
     WeekDayModel,
@@ -1382,6 +1383,61 @@ def update_project_budget(
     return {"project_id": proj.id, "budget_cost": proj.budget_cost, "updated_by": user.email}
 
 
+@router.put("/api/projects/{project_id}/transfer", tags=["Projects"])
+def transfer_project_owner(
+    project_id: int,
+    req: ProjectTransferRequest,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin"])),
+):
+    """
+    Transfers project ownership to another active application user.
+    Admin-only operation.
+    """
+    proj = db.query(ProjectDB).filter(ProjectDB.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    new_owner_clean = req.new_owner.strip()
+    if not new_owner_clean:
+        raise HTTPException(status_code=400, detail="New owner cannot be empty")
+
+    target_user = db.query(PortalUserDB).filter(
+        (PortalUserDB.display_name == new_owner_clean) | (PortalUserDB.email.ilike(new_owner_clean)),
+        PortalUserDB.is_active == True,
+    ).first()
+    if not target_user:
+        target_user = db.query(PortalUserDB).filter(
+            PortalUserDB.display_name.ilike(new_owner_clean),
+            PortalUserDB.is_active == True,
+        ).first()
+    if not target_user:
+        raise HTTPException(status_code=400, detail=f"User '{new_owner_clean}' is not an active portal user")
+
+    old_owner = proj.owner or "Unassigned"
+    proj.owner = target_user.display_name
+    proj.last_updated_by = user.email
+    proj.last_updated_at = datetime.utcnow()
+
+    audit = AuditLogDB(
+        entity_type="PROJECT",
+        entity_id=str(proj.id),
+        action="TRANSFER",
+        changed_by=user.email,
+        details=f"Transferred project '{proj.name}' ({proj.erp_number}) from '{old_owner}' to '{target_user.display_name}' ({target_user.email})",
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(proj)
+
+    return {
+        "message": f"Project successfully transferred to {target_user.display_name}",
+        "project_id": proj.id,
+        "owner": proj.owner,
+        "updated_by": user.email,
+    }
+
+
 @router.get("/api/projects/{project_id}/template/xml", tags=["Projects"])
 @router.post("/api/projects/{project_id}/template/xml", tags=["Projects"])
 def export_project_template_by_id(
@@ -1975,11 +2031,15 @@ def list_portal_users(
     role: Optional[str] = Query(None),
     include_inactive: bool = Query(True),
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(require_roles(["Admin"])),
+    user: CurrentUser = Depends(require_roles(["Admin", "PM", "ResourceManager", "FinanceManager"])),
 ):
     """
     Lists authorized portal users and their role assignments.
+    Non-admin roles are restricted to active portal users only.
     """
+    if "Admin" not in user.roles:
+        include_inactive = False
+
     query = db.query(PortalUserDB)
     if not include_inactive:
         query = query.filter(PortalUserDB.is_active == True)

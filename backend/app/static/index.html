@@ -276,7 +276,7 @@
             </div>
             <div class="form-group">
               <label>Project Manager (Owner) *</label>
-              <input type="text" id="proj-owner" placeholder="e.g. Domas Krupavičius" required>
+              <select id="proj-owner" required></select>
             </div>
             <div class="form-group">
               <label>Base Calendar</label>
@@ -504,6 +504,32 @@
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="closeBudgetModal()">Cancel</button>
         <button class="btn" onclick="saveProjectBudget()"><i class="fa-solid fa-floppy-disk"></i> Save Budget</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Transfer Project Owner Modal -->
+  <div id="transfer-project-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="width: 520px;">
+      <div class="modal-header">
+        <h3 id="transfer-modal-title"><i class="fa-solid fa-user-pen" style="color:var(--primary);"></i> Transfer Project Ownership</h3>
+        <button style="border:none;background:none;font-size:1.2rem;cursor:pointer;" onclick="closeTransferProjectModal()">&times;</button>
+      </div>
+      <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
+        Administrators can reassign project ownership to any active registered portal user.
+      </p>
+      <input type="hidden" id="transfer-project-id">
+      <div style="background:#f3f2f1; border-radius:4px; padding:0.6rem 0.8rem; margin-bottom:1rem; font-size:0.85rem;">
+        <div><strong>Project:</strong> <span id="transfer-project-name-display"></span></div>
+        <div style="margin-top:0.25rem;"><strong>Current Owner:</strong> <span id="transfer-current-owner-display" class="badge badge-generic"></span></div>
+      </div>
+      <div class="form-group">
+        <label for="transfer-new-owner">Select New Owner (Application User) *</label>
+        <select id="transfer-new-owner" required style="width:100%; padding:0.5rem;"></select>
+      </div>
+      <div class="modal-actions" style="margin-top:1.25rem;">
+        <button class="btn btn-secondary" onclick="closeTransferProjectModal()">Cancel</button>
+        <button class="btn" onclick="submitProjectTransfer()"><i class="fa-solid fa-check"></i> Transfer Ownership</button>
       </div>
     </div>
   </div>
@@ -1446,6 +1472,8 @@
           const safeErpAttr = escapeQuote(p.erp_number);
           const safeErpHtml = escapeHtml(p.erp_number);
           const safeNameHtml = escapeHtml(p.name);
+          const safeNameAttr = escapeQuote(p.name || "");
+          const safeOwnerAttr = escapeQuote(p.owner || "");
 
           const isClosed = p.status === "CLOSED";
           const statusBadge = isClosed
@@ -1494,6 +1522,10 @@
           });
 
           // Terminal Actions Column
+          const transferBtn = (currentRole === "Admin")
+            ? `<button class="btn btn-sm btn-secondary" onclick="openTransferProjectModal(${p.id}, '${safeNameAttr}', '${safeOwnerAttr}')" title="Transfer project to another owner (${safeErpHtml})" style="padding:0.2rem 0.45rem; font-size:0.75rem;"><i class="fa-solid fa-user-pen"></i> Transfer</button>`
+            : "";
+
           projCells += `
             <td class="text-center" style="white-space:nowrap;">
               <div style="display:flex; align-items:center; justify-content:center; gap:0.35rem; flex-wrap:wrap;">
@@ -1506,6 +1538,7 @@
                 <button class="btn btn-sm btn-secondary" onclick="openRefreshWizard(${p.id})" title="Refresh rates/holidays for ${safeErpHtml}" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
                   <i class="fa-solid fa-arrows-rotate"></i> Refresh
                 </button>
+                ${transferBtn}
                 ${statusActionBtn}
               </div>
             </td>
@@ -1587,6 +1620,35 @@
     // --- CREATE PROJECT TAB ---
 
     async function prepareNewProjectTab() {
+      // Load application portal users for Project Manager (Owner) dropdown
+      try {
+        const usersResp = await fetch("/api/users?include_inactive=false", { headers: getAuthHeaders() });
+        if (usersResp.ok) {
+          const appUsers = await usersResp.json();
+          const ownerSelect = document.getElementById("proj-owner");
+          if (ownerSelect && appUsers.length > 0) {
+            ownerSelect.innerHTML = appUsers.map(u => {
+              const label = `${escapeHtml(u.display_name)} (${escapeHtml(u.email)}) - ${escapeHtml(u.role)}`;
+              return `<option value="${escapeHtml(u.display_name)}">${label}</option>`;
+            }).join("");
+
+            // Preselect current user if found in app users list
+            if (currentAuthUser) {
+              const matched = appUsers.find(u => 
+                (currentAuthUser.email && u.email && u.email.toLowerCase() === currentAuthUser.email.toLowerCase()) ||
+                (currentAuthUser.display_name && u.display_name && u.display_name.toLowerCase() === currentAuthUser.display_name.toLowerCase()) ||
+                (currentAuthUser.username && u.email && u.email.toLowerCase() === currentAuthUser.username.toLowerCase())
+              );
+              if (matched) {
+                ownerSelect.value = matched.display_name;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load portal users for owner dropdown:", err);
+      }
+
       // Load active calendars only
       const calResp = await fetch("/api/calendars?include_inactive=false", { headers: getAuthHeaders() });
       allCalendars = await calResp.json();
@@ -1765,6 +1827,91 @@
         loadPortfolio();
       } catch (e) {
         console.error("Save budget error:", e);
+      }
+    }
+
+    // --- PROJECT OWNER TRANSFER (Admin Only) ---
+
+    async function openTransferProjectModal(projectId, projName, currentOwner) {
+      document.getElementById("transfer-project-id").value = projectId;
+      document.getElementById("transfer-project-name-display").textContent = projName || `#${projectId}`;
+      document.getElementById("transfer-current-owner-display").textContent = currentOwner || "Unassigned";
+
+      const selectEl = document.getElementById("transfer-new-owner");
+      selectEl.innerHTML = `<option value="">Loading portal users...</option>`;
+      selectEl.disabled = true;
+
+      document.getElementById("transfer-project-modal").style.display = "flex";
+
+      try {
+        const resp = await fetch("/api/users?include_inactive=false", { headers: getAuthHeaders() });
+        if (!resp.ok) {
+          throw new Error("Failed to load portal users");
+        }
+        const users = await resp.json();
+        if (!users || users.length === 0) {
+          selectEl.innerHTML = `<option value="">No active users found</option>`;
+          return;
+        }
+
+        selectEl.innerHTML = `<option value="">-- Select New Owner --</option>` + users.map(u => {
+          const isCurrent = currentOwner && (u.display_name === currentOwner || u.email === currentOwner);
+          const currentSuffix = isCurrent ? " (Current Owner)" : "";
+          return `<option value="${escapeHtml(u.display_name)}">${escapeHtml(u.display_name)} (${escapeHtml(u.email)}) - ${escapeHtml(u.role)}${currentSuffix}</option>`;
+        }).join("");
+        selectEl.disabled = false;
+      } catch (e) {
+        console.error("Failed to load users for transfer:", e);
+        selectEl.innerHTML = `<option value="">Failed to load users</option>`;
+      }
+    }
+
+    function closeTransferProjectModal() {
+      document.getElementById("transfer-project-modal").style.display = "none";
+    }
+
+    async function submitProjectTransfer() {
+      const projectId = document.getElementById("transfer-project-id").value;
+      const newOwner = document.getElementById("transfer-new-owner").value;
+      const currentOwner = document.getElementById("transfer-current-owner-display").textContent;
+
+      if (!newOwner) {
+        alert("Please select a new owner from the list.");
+        return;
+      }
+
+      if (newOwner === currentOwner) {
+        alert("The selected user is already the owner of this project.");
+        return;
+      }
+
+      if (!confirm(`Are you sure you want to transfer ownership of this project to "${newOwner}"?`)) {
+        return;
+      }
+
+      try {
+        const resp = await fetch(`/api/projects/${projectId}/transfer`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            ...getAuthHeaders()
+          },
+          body: JSON.stringify({ new_owner: newOwner })
+        });
+
+        if (!resp.ok) {
+          const err = await resp.json();
+          alert("Transfer failed: " + (err.detail || "Unable to transfer project."));
+          return;
+        }
+
+        const res = await resp.json();
+        alert(res.message || "Project ownership transferred successfully!");
+        closeTransferProjectModal();
+        loadPortfolio();
+      } catch (e) {
+        console.error("Transfer error:", e);
+        alert("An unexpected error occurred during project transfer.");
       }
     }
 

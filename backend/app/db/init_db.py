@@ -591,6 +591,7 @@ def init_db(db: Session) -> None:
                     source="EMAIL",
                 ),
             ]
+            db.add_all(initial_users)
         # Ensure INITIAL_ADMIN_EMAIL is provisioned as Admin if configured
         from backend.app.core.config import settings
         if settings.INITIAL_ADMIN_EMAIL:

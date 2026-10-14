@@ -147,6 +147,10 @@ class ProjectBudgetUpdate(BaseModel):
     budget_cost: float = Field(..., ge=0.0, description="Project budget cost set by Finance Manager")
 
 
+class ProjectTransferRequest(BaseModel):
+    new_owner: str = Field(..., description="Target application user display name or email to transfer project ownership to")
+
+
 class StageDefinitionSchema(BaseModel):
     id: int
     name: str
