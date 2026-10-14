@@ -46,6 +46,11 @@
    - Dialect-aware connection pooling and engine initialization (`configure_engine`) supporting `mssql+pyodbc` (with `fast_executemany`) and `mssql+pymssql`.
    - Zero-data-loss CLI migration script (`backend/app/scripts/migrate_to_mssql.py`) with topological foreign-key batching and `SET IDENTITY_INSERT` handling.
    - Containerized MS SQL Server 2022 deployment via `docker-compose.mssql.yml`.
+8. **Unicode Character Integrity & Mojibake Prevention:**
+   - Enforces `NVARCHAR` Unicode column compilation for MS SQL Server across all SQLAlchemy text definitions (`backend/app/db/session.py`).
+   - Dynamic schema alignment (`_ensure_mssql_unicode`) to convert existing single-byte `VARCHAR` columns to `NVARCHAR` while preserving indexes and nullability.
+   - Restores Baltic special characters (`ą, č, ę, ė, į, š, ų, ū, ž`) across calendar exceptions, resources, projects, and user display names.
+
 
 ---
 

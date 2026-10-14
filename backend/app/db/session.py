@@ -7,9 +7,26 @@ and Microsoft SQL Server (pyodbc / pymssql).
 from typing import Any, Dict, Generator, Optional
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.types import String, Text
 
 from backend.app.core.config import settings
+
+
+# Ensure Microsoft SQL Server always maps String and Text to Unicode types (NVARCHAR),
+# preventing Baltic/Nordic and international character encoding corruption (mojibake).
+@compiles(String, "mssql")
+def _compile_string_mssql(type_, compiler, **kw):
+    if type_.length:
+        return f"NVARCHAR({type_.length})"
+    return "NVARCHAR(MAX)"
+
+
+@compiles(Text, "mssql")
+def _compile_text_mssql(type_, compiler, **kw):
+    return "NVARCHAR(MAX)"
+
 
 
 def configure_engine(url: Optional[str] = None) -> Engine:
