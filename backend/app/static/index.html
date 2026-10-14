@@ -1488,7 +1488,6 @@
           const safeNameHtml = escapeHtml(p.name);
           const safeNameAttr = escapeQuote(p.name || "");
           const safeOwnerAttr = escapeQuote(p.owner || "");
-          const safeOwnerHtml = escapeHtml(p.owner || "Unassigned");
           const isAdmin = isCurrentUserAdmin();
 
           const isClosed = p.status === "CLOSED";
@@ -1499,10 +1498,6 @@
             ? `<button class="btn btn-sm btn-secondary" onclick="toggleProjectStatus(${p.id}, 'OPEN')" title="Re-open project ${safeErpHtml}" style="padding:0.2rem 0.45rem; font-size:0.75rem;"><i class="fa-solid fa-lock-open"></i> Reopen</button>`
             : `<button class="btn btn-sm btn-secondary" onclick="toggleProjectStatus(${p.id}, 'CLOSED')" title="Close / Complete project ${safeErpHtml}" style="padding:0.2rem 0.45rem; font-size:0.75rem;"><i class="fa-solid fa-lock"></i> Close</button>`;
 
-          const inlineTransferBtn = isAdmin
-            ? `<button class="btn btn-sm" onclick="openTransferProjectModal(${p.id})" title="Transfer project ${safeErpHtml} to another application user" style="padding:0.12rem 0.45rem; font-size:0.7rem; background:#eff6fc; color:#005a9e; border:1px solid #c7e0f4; border-radius:3px; cursor:pointer;"><i class="fa-solid fa-user-pen"></i> Transfer</button>`
-            : "";
-
           let projCells = `
             <td>
               <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
@@ -1510,12 +1505,6 @@
                   ${safeNameHtml}
                 </span>
                 ${statusBadge}
-              </div>
-              <div style="margin-top:0.35rem; display:flex; align-items:center; gap:0.4rem; font-size:0.75rem; flex-wrap:wrap;">
-                <span class="badge" style="background:#f3f2f1; color:#323130; border:1px solid #d2d0ce; font-weight:600; padding:0.15rem 0.45rem;" title="Project Manager (Owner)">
-                  <i class="fa-solid fa-user-tie" style="color:var(--primary); margin-right:0.3rem;"></i>Owner: ${safeOwnerHtml}
-                </span>
-                ${inlineTransferBtn}
               </div>
             </td>
             <td class="text-center">${p.percent_complete}%</td>
