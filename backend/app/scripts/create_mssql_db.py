@@ -30,7 +30,7 @@ logger = logging.getLogger("create_mssql_db")
 def create_mssql_database(
     host: str,
     port: int = 1433,
-    database: str = "mpp_hub",
+    database: str = "Garant_MPP_hub",
     user: str = "",
     password: str = "",
     trusted_connection: bool = False,
@@ -109,8 +109,8 @@ def create_mssql_database(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Create and configure MPP Hub database on Microsoft SQL Server")
     parser.add_argument("--host", type=str, default=None, help="MS SQL Server host/IP (defaults to MSSQL_HOST in .env)")
-    parser.add_argument("--port", type=int, default=1433, help="MS SQL Server port (default: 1433)")
-    parser.add_argument("--database", type=str, default="mpp_hub", help="Database name to create (default: mpp_hub)")
+    parser.add_argument("--port", type=int, default=settings.MSSQL_PORT or 1433, help="MS SQL Server port (default: 1433)")
+    parser.add_argument("--database", type=str, default=settings.MSSQL_DATABASE or "Garant_MPP_hub", help="Database name to create (default: Garant_MPP_hub)")
     parser.add_argument("--user", type=str, default=None, help="SQL Server username (defaults to MSSQL_USER in .env)")
     parser.add_argument("--password", type=str, default=None, help="SQL Server password (defaults to MSSQL_PASSWORD in .env)")
     parser.add_argument("--trusted-connection", action="store_true", help="Use Windows Authentication instead of SQL Auth")

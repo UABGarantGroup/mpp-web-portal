@@ -12,50 +12,48 @@ USE [master];
 GO
 
 -- 1. Create database if it does not already exist
-IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'mpp_hub')
+IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'Garant_MPP_hub')
 BEGIN
-    PRINT 'Creating database [mpp_hub]...';
-    CREATE DATABASE [mpp_hub]
+    PRINT 'Creating database [Garant_MPP_hub]...';
+    CREATE DATABASE [Garant_MPP_hub]
     COLLATE Latin1_General_100_CI_AS_SC_UTF8; -- Recommended UTF-8 collation; falls back to server default if UTF-8 not supported
 END
 ELSE
 BEGIN
-    PRINT 'Database [mpp_hub] already exists.';
+    PRINT 'Database [Garant_MPP_hub] already exists.';
 END
 GO
 
 -- 2. Configure Snapshot Isolation for High Concurrency
 -- Prevents readers and writers from blocking each other in enterprise environments
-ALTER DATABASE [mpp_hub] SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;
-ALTER DATABASE [mpp_hub] SET ALLOW_SNAPSHOT_ISOLATION ON;
-ALTER DATABASE [mpp_hub] SET AUTO_UPDATE_STATISTICS ON;
-ALTER DATABASE [mpp_hub] SET AUTO_CLOSE OFF;
+ALTER DATABASE [Garant_MPP_hub] SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;
+ALTER DATABASE [Garant_MPP_hub] SET ALLOW_SNAPSHOT_ISOLATION ON;
+ALTER DATABASE [Garant_MPP_hub] SET AUTO_UPDATE_STATISTICS ON;
+ALTER DATABASE [Garant_MPP_hub] SET AUTO_CLOSE OFF;
 GO
 
-PRINT 'Database [mpp_hub] configuration updated successfully.';
+PRINT 'Database [Garant_MPP_hub] configuration updated successfully.';
 GO
 
 -- ==============================================================================
--- OPTIONAL: Create Dedicated Application Login and User
--- (Uncomment and adjust username / password if not using 'sa' or Windows Auth)
+-- Application Login and User: garantMPPadmin
 -- ==============================================================================
-/*
-IF NOT EXISTS (SELECT name FROM sys.server_principals WHERE name = N'mpp_user')
+IF NOT EXISTS (SELECT name FROM sys.server_principals WHERE name = N'garantMPPadmin')
 BEGIN
-    PRINT 'Creating login [mpp_user]...';
-    CREATE LOGIN [mpp_user] WITH PASSWORD = N'YourStrongPasswordHere!2026', CHECK_POLICY = ON;
+    PRINT 'Creating login [garantMPPadmin]...';
+    CREATE LOGIN [garantMPPadmin] WITH PASSWORD = N'.c?6j1R!G$g;tYT9M#Sy', CHECK_POLICY = ON;
 END
 GO
 
-USE [mpp_hub];
+USE [Garant_MPP_hub];
 GO
 
-IF NOT EXISTS (SELECT name FROM sys.database_principals WHERE name = N'mpp_user')
+IF NOT EXISTS (SELECT name FROM sys.database_principals WHERE name = N'garantMPPadmin')
 BEGIN
-    PRINT 'Creating user [mpp_user] in [mpp_hub]...';
-    CREATE USER [mpp_user] FOR LOGIN [mpp_user];
-    ALTER ROLE [db_owner] ADD MEMBER [mpp_user];
-    PRINT 'User [mpp_user] mapped and granted db_owner permissions on [mpp_hub].';
+    PRINT 'Creating user [garantMPPadmin] in [Garant_MPP_hub]...';
+    CREATE USER [garantMPPadmin] FOR LOGIN [garantMPPadmin];
+    ALTER ROLE [db_owner] ADD MEMBER [garantMPPadmin];
+    PRINT 'User [garantMPPadmin] mapped and granted db_owner permissions on [Garant_MPP_hub].';
 END
 GO
-*/
+

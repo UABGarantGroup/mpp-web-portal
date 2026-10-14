@@ -67,12 +67,14 @@ def migrate_database(
     """
     Migrates all table data from source to target MS SQL Server database.
     """
-    src_url = source_url or settings.DATABASE_URL
-    if not target_url and not target_engine:
+    tgt_url = target_url or (settings.DATABASE_URL if not target_engine else "")
+    src_url = source_url or ("sqlite:///./mpp_hub.db" if (tgt_url and not tgt_url.startswith("sqlite")) else settings.DATABASE_URL)
+
+    if not tgt_url and not target_engine:
         raise ValueError("Target database URL or target_engine must be provided.")
 
     src_engine = source_engine or configure_engine(src_url)
-    tgt_engine = target_engine or configure_engine(target_url)
+    tgt_engine = target_engine or configure_engine(tgt_url)
 
     target_dialect_name = tgt_engine.dialect.name
     is_mssql = (target_dialect_name == "mssql")
@@ -175,8 +177,8 @@ def migrate_database(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Migrate MPP Hub database to Microsoft SQL Server")
-    parser.add_argument("--source", type=str, default=None, help="Source database URL (defaults to DATABASE_URL in .env)")
-    parser.add_argument("--target", type=str, required=True, help="Target MS SQL Server database URL (e.g., mssql+pymssql://user:pass@host:1433/db)")
+    parser.add_argument("--source", type=str, default=None, help="Source database URL (defaults to sqlite:///./mpp_hub.db)")
+    parser.add_argument("--target", type=str, default=None, help="Target MS SQL Server database URL (defaults to configured MSSQL in .env)")
     parser.add_argument("--dry-run", action="store_true", help="Perform inspection and count verification without inserting data")
     parser.add_argument("--no-init-schema", action="store_true", help="Skip creating tables on target database")
     parser.add_argument("--batch-size", type=int, default=500, help="Batch insertion chunk size (default: 500)")
