@@ -60,4 +60,5 @@ $RECYCLE.BIN/
 scratch/
 *.tmp
 *.tar.gz
+*.zip
 
