@@ -68,7 +68,7 @@
       <UID>1</UID>
       <Name>Lithuania – Standard Enterprise Calendar</Name>
       <IsBaseCalendar>1</IsBaseCalendar>
-      <BaseCalendarUID>-1</BaseCalendarUID>
+      <IsBaselineCalendar>0</IsBaselineCalendar>
       <WeekDays>
         <WeekDay>
           <DayType>1</DayType>

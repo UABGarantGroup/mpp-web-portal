@@ -182,9 +182,20 @@ def test_base_calendar_weekdays_and_exceptions(sample_data):
     root = ET.fromstring(xml_str)
     ns = {"p": "http://schemas.microsoft.com/project"}
 
+    assert xml_str.startswith('<?xml version="1.0" encoding="UTF-8"?>')
+
     cal = root.find("p:Calendars/p:Calendar[p:UID='1']", ns)
     assert cal is not None
     assert cal.find("p:IsBaseCalendar", ns).text == "1"
+    assert cal.find("p:IsBaselineCalendar", ns).text == "0"
+    assert cal.find("p:BaseCalendarUID", ns) is None  # Base calendars must NOT have BaseCalendarUID in MSPDI schema
+
+    # Derived resource calendar (UID 1101) must have IsBaseCalendar=0 and valid BaseCalendarUID
+    res_cal = root.find("p:Calendars/p:Calendar[p:UID='1101']", ns)
+    assert res_cal is not None
+    assert res_cal.find("p:IsBaseCalendar", ns).text == "0"
+    assert res_cal.find("p:IsBaselineCalendar", ns).text == "0"
+    assert res_cal.find("p:BaseCalendarUID", ns).text == "1"
 
     # WeekDays
     weekdays = cal.findall("p:WeekDays/p:WeekDay", ns)

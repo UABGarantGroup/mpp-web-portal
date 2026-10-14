@@ -209,17 +209,21 @@ def build_ms_project_xml(
     # 3. Calendars Definition
     calendars_el = ET.SubElement(root, "Calendars")
 
-    # Write Base Calendars (All Active Enterprise Calendars)
-    active_base_calendars = [c for c in calendars.values() if getattr(c, "is_active", True)]
-    if selected_cal.id not in [c.id for c in active_base_calendars]:
-        active_base_calendars.insert(0, selected_cal)
+    # Write Base Calendars (All Active Enterprise Calendars, project selected calendar first)
+    all_active = [c for c in calendars.values() if getattr(c, "is_active", True)]
+    active_dict = {c.id: c for c in all_active}
+    active_dict[selected_cal.id] = selected_cal
+
+    other_cals = sorted([c for cid, c in active_dict.items() if cid != selected_cal.id], key=lambda x: x.id)
+    active_base_calendars = [selected_cal] + other_cals
 
     for cal_item in active_base_calendars:
         cal_el = ET.SubElement(calendars_el, "Calendar")
         ET.SubElement(cal_el, "UID").text = str(cal_item.id)
-        ET.SubElement(cal_el, "Name").text = cal_item.name
+        ET.SubElement(cal_el, "Name").text = cal_item.name[:51]
         ET.SubElement(cal_el, "IsBaseCalendar").text = "1"
-        ET.SubElement(cal_el, "BaseCalendarUID").text = "-1"
+        ET.SubElement(cal_el, "IsBaselineCalendar").text = "0"
+        # Base calendars do NOT have a parent BaseCalendarUID in MSPDI schema.
 
         # Write WeekDays with configured working hours (Mon-Sun)
         weekdays_el = ET.SubElement(cal_el, "WeekDays")
@@ -295,8 +299,9 @@ def build_ms_project_xml(
         res_cal_el = ET.SubElement(calendars_el, "Calendar")
         res_cal_uid = 1000 + res.id
         ET.SubElement(res_cal_el, "UID").text = str(res_cal_uid)
-        ET.SubElement(res_cal_el, "Name").text = res.name
+        ET.SubElement(res_cal_el, "Name").text = res.name[:51]
         ET.SubElement(res_cal_el, "IsBaseCalendar").text = "0"
+        ET.SubElement(res_cal_el, "IsBaselineCalendar").text = "0"
         if res.base_calendar_id in active_base_uids and res.base_calendar_id != 1:
             res_base_id = res.base_calendar_id
         else:
@@ -427,7 +432,7 @@ def build_ms_project_xml(
         ET.SubElement(budget_assignment, "ResourceUID").text = str(budget_resource_uid)
         ET.SubElement(budget_assignment, "BudgetCost").text = f"{template_req.budget_cost:.2f}"
 
-    # Prettify and serialize XML output
+    # Prettify and serialize XML output with explicit UTF-8 declaration
     rough_string = ET.tostring(root, encoding="utf-8")
     reparsed = minidom.parseString(rough_string)
-    return reparsed.toprettyxml(indent="  ")
+    return reparsed.toprettyxml(indent="  ", encoding="UTF-8").decode("utf-8")
