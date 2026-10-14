@@ -188,15 +188,116 @@ def parse_project_xml(file_bytes: bytes) -> Dict[str, Any]:
         except Exception:
             return None
 
+    # 1. Collect resources and identify Budget Resources (Type=2/Cost, IsBudget=1)
+    resources_list = []
+    budget_resource_uids = set()
+    res_nodes = root.findall(f".//{prefix}Resource", ns) if ns else root.findall(".//Resource")
+    for r in res_nodes:
+        uid_str = find_text(r, f"{prefix}UID")
+        name_str = find_text(r, f"{prefix}Name")
+        if not uid_str or uid_str == "0" or not name_str:
+            continue
+        is_generic = find_text(r, f"{prefix}IsGeneric") == "1"
+        is_cost = find_text(r, f"{prefix}Type") == "2"
+        is_budget = find_text(r, f"{prefix}IsBudget") == "1"
+        if is_budget or "budget" in name_str.lower():
+            budget_resource_uids.add(uid_str)
+        resources_list.append({
+            "uid": int(uid_str),
+            "name": name_str,
+            "is_generic": is_generic,
+            "is_cost": is_cost,
+            "is_budget": is_budget,
+        })
+
+    # 2. Inspect Assignments for Task 0 budget resource assignments and non-budget baseline cost
+    asgn_nodes = root.findall(f".//{prefix}Assignment", ns) if ns else root.findall(".//Assignment")
+    task_0_budget_cost = 0.0
+    task_0_baseline_budget = 0.0
+    total_nonbudget_asgn_baseline = 0.0
+
+    for asgn in asgn_nodes:
+        t_uid = find_text(asgn, f"{prefix}TaskUID")
+        r_uid = find_text(asgn, f"{prefix}ResourceUID")
+        b_cost = parse_float(find_text(asgn, f"{prefix}BudgetCost"))
+        cost_val = parse_float(find_text(asgn, f"{prefix}Cost"))
+
+        # Look for baseline values on assignment
+        base_cost_val = parse_float(find_text(asgn, f"{prefix}BaselineCost") or find_text(asgn, f"{prefix}Baseline/{prefix}Cost"))
+        base_b_cost_val = parse_float(find_text(asgn, f"{prefix}BaselineBudgetCost") or find_text(asgn, f"{prefix}Baseline/{prefix}BudgetCost"))
+
+        # Check nested <Baseline> elements
+        baselines = asgn.findall(f"{prefix}Baseline", ns) if ns else asgn.findall("Baseline")
+        for b in baselines:
+            if base_cost_val == 0.0:
+                base_cost_val = parse_float(find_text(b, f"{prefix}Cost"))
+            if base_b_cost_val == 0.0:
+                base_b_cost_val = parse_float(find_text(b, f"{prefix}BudgetCost") or find_text(b, f"{prefix}Cost"))
+
+        is_budget_asgn = (r_uid in budget_resource_uids) or (b_cost > 0.0)
+
+        # In MS Project, budget resources are assigned strictly to Task 0
+        if (t_uid == "0" or t_uid is None) and is_budget_asgn:
+            task_0_budget_cost += (b_cost if b_cost > 0.0 else cost_val)
+            task_0_baseline_budget += (base_b_cost_val if base_b_cost_val > 0.0 else base_cost_val)
+        elif not is_budget_asgn:
+            total_nonbudget_asgn_baseline += base_cost_val
+
+    # 3. Extract Task 0 project summary metrics
     percent_complete = parse_float(find_text(task_0, f"{prefix}PercentComplete"))
     percent_work_complete = parse_float(find_text(task_0, f"{prefix}PercentWorkComplete"))
     start_date = parse_date(find_text(task_0, f"{prefix}Start"))
     finish_date = parse_date(find_text(task_0, f"{prefix}Finish"))
-    baseline_finish = parse_date(find_text(task_0, f"{prefix}Baseline/{prefix}Finish"))
+
+    # Baseline finish: check direct element, sub-element, or nested <Baseline>
+    baseline_finish = parse_date(find_text(task_0, f"{prefix}BaselineFinish") or find_text(task_0, f"{prefix}Baseline/{prefix}Finish"))
+    if not baseline_finish and task_0 is not None:
+        t0_baselines = task_0.findall(f"{prefix}Baseline", ns) if ns else task_0.findall("Baseline")
+        for b in t0_baselines:
+            bf = parse_date(find_text(b, f"{prefix}Finish"))
+            if bf:
+                baseline_finish = bf
+                break
+
     actual_cost = parse_float(find_text(task_0, f"{prefix}ActualCost"))
     cost = parse_float(find_text(task_0, f"{prefix}Cost"))
+
+    # Baseline cost: In MS Project, Task 0 BaselineCost represents the work/resource baseline cost
     baseline_cost = parse_float(find_text(task_0, f"{prefix}BaselineCost") or find_text(task_0, f"{prefix}Baseline/{prefix}Cost"))
-    baseline_budget = parse_float(find_text(task_0, f"{prefix}BaselineBudget") or find_text(task_0, f"{prefix}Baseline/{prefix}BudgetCost"))
+    if baseline_cost == 0.0 and task_0 is not None:
+        t0_baselines = task_0.findall(f"{prefix}Baseline", ns) if ns else task_0.findall("Baseline")
+        for b in t0_baselines:
+            b_cost = parse_float(find_text(b, f"{prefix}Cost"))
+            if b_cost > 0.0:
+                baseline_cost = b_cost
+                break
+
+    # If Task 0 baseline_cost is 0.0, roll up from leaf tasks (MS Project calculation logic)
+    if baseline_cost == 0.0 and tasks:
+        leaf_baseline_sum = 0.0
+        for t in tasks:
+            t_uid = find_text(t, f"{prefix}UID")
+            if t_uid == "0":
+                continue
+            is_summary = find_text(t, f"{prefix}Summary") == "1"
+            if not is_summary:
+                t_bc = parse_float(find_text(t, f"{prefix}BaselineCost") or find_text(t, f"{prefix}Baseline/{prefix}Cost"))
+                if t_bc == 0.0:
+                    t_baselines = t.findall(f"{prefix}Baseline", ns) if ns else t.findall("Baseline")
+                    for b in t_baselines:
+                        bc = parse_float(find_text(b, f"{prefix}Cost"))
+                        if bc > 0.0:
+                            t_bc = bc
+                            break
+                leaf_baseline_sum += t_bc
+        if leaf_baseline_sum > 0.0:
+            baseline_cost = leaf_baseline_sum
+        elif total_nonbudget_asgn_baseline > 0.0:
+            baseline_cost = total_nonbudget_asgn_baseline
+
+    # Budget cost & Baseline budget cost
+    budget_cost = parse_float(find_text(task_0, f"{prefix}BudgetCost")) or task_0_budget_cost
+    baseline_budget = parse_float(find_text(task_0, f"{prefix}BaselineBudget") or find_text(task_0, f"{prefix}Baseline/{prefix}BudgetCost")) or task_0_baseline_budget
 
     # Extract ERP Project Number from Task 0 ExtendedAttribute
     erp_number = None
@@ -207,23 +308,6 @@ def parse_project_xml(file_bytes: bytes) -> Dict[str, Any]:
             val = find_text(ea, f"{prefix}Value")
             if fid == "188743731" and val:  # Task Text1 (ERP Project Number)
                 erp_number = val
-
-    # Resources
-    resources_list = []
-    res_nodes = root.findall(f".//{prefix}Resource", ns) if ns else root.findall(".//Resource")
-    for r in res_nodes:
-        uid_str = find_text(r, f"{prefix}UID")
-        name_str = find_text(r, f"{prefix}Name")
-        if not uid_str or uid_str == "0" or not name_str:
-            continue
-        is_generic = find_text(r, f"{prefix}IsGeneric") == "1"
-        is_cost = find_text(r, f"{prefix}Type") == "2"
-        resources_list.append({
-            "uid": int(uid_str),
-            "name": name_str,
-            "is_generic": is_generic,
-            "is_cost": is_cost,
-        })
 
     return {
         "title": title,
@@ -237,6 +321,7 @@ def parse_project_xml(file_bytes: bytes) -> Dict[str, Any]:
         "cost": cost,
         "baseline_cost": baseline_cost,
         "baseline_budget": baseline_budget,
+        "budget_cost": budget_cost,
         "resources": resources_list,
     }
 
@@ -298,6 +383,41 @@ def parse_with_mpxj(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         cost = j_float(task_0.getCost()) if task_0 else 0.0
         baseline_cost = j_float(task_0.getBaselineCost()) if task_0 else 0.0
         baseline_budget = j_float(task_0.getBaselineBudgetCost()) if task_0 else 0.0
+        budget_cost = j_float(task_0.getBudgetCost()) if task_0 else 0.0
+
+        # Inspect Task 0 assignments for budget resource & baseline budget
+        if task_0:
+            try:
+                asgns = task_0.getResourceAssignments()
+                if asgns:
+                    for i in range(asgns.size()):
+                        asgn = asgns.get(i)
+                        res = asgn.getResource()
+                        is_budget_res = bool(res.getBudget()) if (res and res.getBudget() is not None) else False
+                        asgn_b_cost = j_float(asgn.getBudgetCost())
+                        asgn_cost = j_float(asgn.getCost())
+                        asgn_base_b_cost = j_float(asgn.getBaselineBudgetCost())
+                        asgn_base_cost = j_float(asgn.getBaselineCost())
+
+                        if is_budget_res or asgn_b_cost > 0.0:
+                            if budget_cost == 0.0:
+                                budget_cost += (asgn_b_cost if asgn_b_cost > 0.0 else asgn_cost)
+                            if baseline_budget == 0.0:
+                                baseline_budget += (asgn_base_b_cost if asgn_base_b_cost > 0.0 else asgn_base_cost)
+            except Exception as e:
+                logger.debug("Error reading task 0 assignments in MPXJ: %s", e)
+
+        # Roll up baseline_cost from leaf tasks if task_0 has 0.0
+        if baseline_cost == 0.0 and tasks.size() > 1:
+            total_leaf_baseline = 0.0
+            for idx in range(tasks.size()):
+                t = tasks.get(idx)
+                if t.getUniqueID() == 0 or t.getID() == 0:
+                    continue
+                if not bool(t.getSummary()):
+                    total_leaf_baseline += j_float(t.getBaselineCost())
+            if total_leaf_baseline > 0.0:
+                baseline_cost = total_leaf_baseline
 
         # ERP Number check from Task Text1
         erp_number = None
@@ -319,11 +439,13 @@ def parse_with_mpxj(file_bytes: bytes, filename: str) -> Dict[str, Any]:
             if uid is None or uid == 0 or not name:
                 continue
             is_gen = bool(r.getGeneric()) if r.getGeneric() is not None else False
+            is_budget = bool(r.getBudget()) if r.getBudget() is not None else False
             resources_list.append({
                 "uid": int(str(uid)),
                 "name": name,
                 "is_generic": is_gen,
                 "is_cost": False,
+                "is_budget": is_budget,
             })
 
         return {
@@ -338,6 +460,7 @@ def parse_with_mpxj(file_bytes: bytes, filename: str) -> Dict[str, Any]:
             "cost": cost,
             "baseline_cost": baseline_cost,
             "baseline_budget": baseline_budget,
+            "budget_cost": budget_cost,
             "resources": resources_list,
         }
     finally:

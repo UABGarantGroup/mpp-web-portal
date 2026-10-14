@@ -20,3 +20,4 @@
 - [x] Fix MS Project XML calendar export: omit BaseCalendarUID on base calendars, enforce 51-char limit, sort project calendar first, and output UTF-8 XML declaration so calendars appear in MS Project Desktop calendar menu.
 - [x] Refactor project list: move export (.XML), upload, refresh, and close/reopen buttons to a dedicated terminal Actions column.
 - [x] Project owner selection from portal users in project template creation & Admin project ownership transfer endpoint and modal UI.
+- [x] Align Baseline Cost, Budget Cost, and Baseline Budget Cost parsing and snapshot calculation with Microsoft Project logic during schedule upload action.

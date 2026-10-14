@@ -37,6 +37,10 @@
    - Emergency fallback admin user (`emergency_admin`).
    - Project template creation selects project owner exclusively from active portal users.
    - Admin-exclusive project ownership transfer (`PUT /api/projects/{id}/transfer`) with audit trail.
+6. **Schedule Upload & Baseline/Budget Cost Engine (MS Project Compliant):**
+   - Adheres to Microsoft Project logic: Task 0 Budget Resource assignments define `Budget Cost` and `Baseline Budget Cost`.
+   - Work baseline costs roll up from leaf tasks when summary baseline cost is omitted or zero.
+   - Harmonizes project master budget (`ProjectDB.budget_cost`) and snapshot metrics upon schedule upload.
 
 ---
 

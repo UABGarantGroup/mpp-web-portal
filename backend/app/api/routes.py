@@ -1792,6 +1792,18 @@ async def upload_project_schedule(
                     detail=f"Project verification error! Neither the file title ('{file_title}') nor filename ('{file.filename}') matches target ERP number '{proj.erp_number}'. Please check that you selected the schedule for this project."
                 )
 
+    # Microsoft Project logic alignment:
+    # If the uploaded file defines a Budget Resource assignment (budget_cost > 0), align both
+    # the project master budget and the snapshot budget with the MS Project file.
+    file_budget_cost = parsed.get("budget_cost")
+    if file_budget_cost is not None and file_budget_cost > 0.0:
+        proj.budget_cost = file_budget_cost
+        effective_budget_cost = file_budget_cost
+    else:
+        effective_budget_cost = proj.budget_cost
+
+    file_baseline_budget = parsed.get("baseline_budget", 0.0)
+
     # Update latest project snapshot or create new one
     now = datetime.utcnow()
     snapshot = ProjectSnapshotDB(
@@ -1804,8 +1816,8 @@ async def upload_project_schedule(
         actual_cost=parsed["actual_cost"],
         cost=parsed["cost"],
         baseline_cost=parsed["baseline_cost"],
-        baseline_budget=parsed["baseline_budget"],
-        budget_cost=proj.budget_cost,
+        baseline_budget=file_baseline_budget,
+        budget_cost=effective_budget_cost,
         source="UPLOAD",
         recorded_at=now,
     )
@@ -1824,7 +1836,7 @@ async def upload_project_schedule(
         entity_id=str(proj.id),
         action="UPLOAD",
         changed_by=user.email,
-        details=f"Schedule file '{os.path.basename(file.filename or '')}' uploaded by {user.email}. % Complete: {parsed['percent_complete']}%, Cost: €{parsed['cost']}",
+        details=f"Schedule file '{os.path.basename(file.filename or '')}' uploaded by {user.email}. % Complete: {parsed['percent_complete']}%, Cost: €{parsed['cost']}, Baseline Cost: €{parsed['baseline_cost']}, Budget Cost: €{effective_budget_cost}, Baseline Budget: €{file_baseline_budget}",
     )
     db.add(audit)
     db.commit()
@@ -1843,8 +1855,8 @@ async def upload_project_schedule(
             "actual_cost": parsed["actual_cost"],
             "cost": parsed["cost"],
             "baseline_cost": parsed["baseline_cost"],
-            "baseline_budget": parsed["baseline_budget"],
-            "budget_cost": proj.budget_cost,
+            "baseline_budget": snapshot.baseline_budget,
+            "budget_cost": snapshot.budget_cost,
         },
         "file_resources": file_resources,
         "generic_resources_to_replace": generic_found,
