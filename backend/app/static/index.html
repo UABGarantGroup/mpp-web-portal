@@ -276,7 +276,10 @@
             </div>
             <div class="form-group">
               <label>Project Manager (Owner) *</label>
-              <select id="proj-owner" required></select>
+              <select id="proj-owner" required>
+                <option value="">Select Project Manager (Portal User)...</option>
+              </select>
+              <small style="font-size:0.75rem; color:var(--text-muted); display:block; margin-top:0.2rem;">Picked from registered application users (not resources)</small>
             </div>
             <div class="form-group">
               <label>Base Calendar</label>
@@ -1139,8 +1142,18 @@
       }
     }
 
+    function isCurrentUserAdmin() {
+      if (currentRole && currentRole.toLowerCase() === "admin") return true;
+      if (currentAuthUser) {
+        if (currentAuthUser.is_admin) return true;
+        if (currentAuthUser.primary_role && currentAuthUser.primary_role.toLowerCase() === "admin") return true;
+        if (Array.isArray(currentAuthUser.roles) && currentAuthUser.roles.some(r => r && r.toLowerCase() === "admin")) return true;
+      }
+      return false;
+    }
+
     function updateTabVisibilityByRole() {
-      const isPM = currentRole === "PM";
+      const isPM = (currentRole === "PM" || (currentAuthUser && currentAuthUser.primary_role === "PM")) && !isCurrentUserAdmin();
       const pmHiddenTabs = ["resources", "calendars", "stages", "users"];
       
       pmHiddenTabs.forEach(tabId => {
@@ -1307,6 +1320,7 @@
           renderSignInState(true);
           updateTabVisibilityByRole();
           await loadPortfolio();
+          prepareNewProjectTab();
           return true;
         } else {
           const err = await resp.json().catch(() => ({}));
@@ -1474,6 +1488,8 @@
           const safeNameHtml = escapeHtml(p.name);
           const safeNameAttr = escapeQuote(p.name || "");
           const safeOwnerAttr = escapeQuote(p.owner || "");
+          const safeOwnerHtml = escapeHtml(p.owner || "Unassigned");
+          const isAdmin = isCurrentUserAdmin();
 
           const isClosed = p.status === "CLOSED";
           const statusBadge = isClosed
@@ -1483,6 +1499,10 @@
             ? `<button class="btn btn-sm btn-secondary" onclick="toggleProjectStatus(${p.id}, 'OPEN')" title="Re-open project ${safeErpHtml}" style="padding:0.2rem 0.45rem; font-size:0.75rem;"><i class="fa-solid fa-lock-open"></i> Reopen</button>`
             : `<button class="btn btn-sm btn-secondary" onclick="toggleProjectStatus(${p.id}, 'CLOSED')" title="Close / Complete project ${safeErpHtml}" style="padding:0.2rem 0.45rem; font-size:0.75rem;"><i class="fa-solid fa-lock"></i> Close</button>`;
 
+          const inlineTransferBtn = isAdmin
+            ? `<button class="btn btn-sm" onclick="openTransferProjectModal(${p.id})" title="Transfer project ${safeErpHtml} to another application user" style="padding:0.12rem 0.45rem; font-size:0.7rem; background:#eff6fc; color:#005a9e; border:1px solid #c7e0f4; border-radius:3px; cursor:pointer;"><i class="fa-solid fa-user-pen"></i> Transfer</button>`
+            : "";
+
           let projCells = `
             <td>
               <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
@@ -1490,6 +1510,12 @@
                   ${safeNameHtml}
                 </span>
                 ${statusBadge}
+              </div>
+              <div style="margin-top:0.35rem; display:flex; align-items:center; gap:0.4rem; font-size:0.75rem; flex-wrap:wrap;">
+                <span class="badge" style="background:#f3f2f1; color:#323130; border:1px solid #d2d0ce; font-weight:600; padding:0.15rem 0.45rem;" title="Project Manager (Owner)">
+                  <i class="fa-solid fa-user-tie" style="color:var(--primary); margin-right:0.3rem;"></i>Owner: ${safeOwnerHtml}
+                </span>
+                ${inlineTransferBtn}
               </div>
             </td>
             <td class="text-center">${p.percent_complete}%</td>
@@ -1522,8 +1548,8 @@
           });
 
           // Terminal Actions Column
-          const transferBtn = (currentRole === "Admin")
-            ? `<button class="btn btn-sm btn-secondary" onclick="openTransferProjectModal(${p.id}, '${safeNameAttr}', '${safeOwnerAttr}')" title="Transfer project to another owner (${safeErpHtml})" style="padding:0.2rem 0.45rem; font-size:0.75rem;"><i class="fa-solid fa-user-pen"></i> Transfer</button>`
+          const transferBtn = isAdmin
+            ? `<button class="btn btn-sm btn-secondary" onclick="openTransferProjectModal(${p.id})" title="Transfer project to another owner (${safeErpHtml})" style="padding:0.2rem 0.45rem; font-size:0.75rem; color:var(--primary); font-weight:600;"><i class="fa-solid fa-user-pen"></i> Transfer</button>`
             : "";
 
           projCells += `
@@ -1627,7 +1653,7 @@
           const appUsers = await usersResp.json();
           const ownerSelect = document.getElementById("proj-owner");
           if (ownerSelect && appUsers.length > 0) {
-            ownerSelect.innerHTML = appUsers.map(u => {
+            ownerSelect.innerHTML = `<option value="">Select Project Manager (Portal User)...</option>` + appUsers.map(u => {
               const label = `${escapeHtml(u.display_name)} (${escapeHtml(u.email)}) - ${escapeHtml(u.role)}`;
               return `<option value="${escapeHtml(u.display_name)}">${label}</option>`;
             }).join("");
@@ -1833,9 +1859,19 @@
     // --- PROJECT OWNER TRANSFER (Admin Only) ---
 
     async function openTransferProjectModal(projectId, projName, currentOwner) {
+      let p = null;
+      if (portfolioData && portfolioData.groups) {
+        for (const g of portfolioData.groups) {
+          const found = g.projects.find(x => x.id === projectId);
+          if (found) { p = found; break; }
+        }
+      }
+      const displayName = projName || (p ? `${p.erp_number} - ${p.name}` : `#${projectId}`);
+      const ownerName = currentOwner || (p ? (p.owner || "Unassigned") : "Unassigned");
+
       document.getElementById("transfer-project-id").value = projectId;
-      document.getElementById("transfer-project-name-display").textContent = projName || `#${projectId}`;
-      document.getElementById("transfer-current-owner-display").textContent = currentOwner || "Unassigned";
+      document.getElementById("transfer-project-name-display").textContent = displayName;
+      document.getElementById("transfer-current-owner-display").textContent = ownerName;
 
       const selectEl = document.getElementById("transfer-new-owner");
       selectEl.innerHTML = `<option value="">Loading portal users...</option>`;
@@ -1855,7 +1891,7 @@
         }
 
         selectEl.innerHTML = `<option value="">-- Select New Owner --</option>` + users.map(u => {
-          const isCurrent = currentOwner && (u.display_name === currentOwner || u.email === currentOwner);
+          const isCurrent = ownerName && (u.display_name === ownerName || u.email === ownerName);
           const currentSuffix = isCurrent ? " (Current Owner)" : "";
           return `<option value="${escapeHtml(u.display_name)}">${escapeHtml(u.display_name)} (${escapeHtml(u.email)}) - ${escapeHtml(u.role)}${currentSuffix}</option>`;
         }).join("");
@@ -1906,9 +1942,9 @@
         }
 
         const res = await resp.json();
-        alert(res.message || "Project ownership transferred successfully!");
         closeTransferProjectModal();
-        loadPortfolio();
+        await loadPortfolio();
+        alert(res.message || "Project ownership transferred successfully!");
       } catch (e) {
         console.error("Transfer error:", e);
         alert("An unexpected error occurred during project transfer.");
