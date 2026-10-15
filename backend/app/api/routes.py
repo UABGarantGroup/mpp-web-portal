@@ -6,11 +6,12 @@ Enforces RBAC permissions, audit logging, multi-country calendars, and template 
 import os
 import secrets
 import time
+import uuid
 from collections import defaultdict
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 import urllib.parse
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -1946,6 +1947,171 @@ def refresh_project_template(
 
     # Generate refreshed template with updated rates, calendars, and resources
     return export_project_template_by_id(project_id=project_id, db=db, user=user)
+
+
+@router.post("/api/projects/import-mpp", tags=["Projects"])
+async def import_project_from_mpp(
+    file: UploadFile = File(...),
+    owner: str = Form(..., description="Project Manager selected from portal users"),
+    erp_number: Optional[str] = Form(None, description="Optional ERP project code"),
+    calendar_id: Optional[int] = Form(1, description="Enterprise calendar ID"),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["PM", "Admin"])),
+):
+    """
+    Imports a new project directly from an MPP or MSPDI XML file.
+    Assigns the specified Project Manager from the users list, and sets
+    the project title from the top task description of the MPP schedule.
+    """
+    # 1. Validate PM owner
+    clean_owner = (owner or "").strip()
+    if not clean_owner:
+        raise HTTPException(status_code=400, detail="Project Manager selection is required before importing.")
+
+    pm_user = db.query(PortalUserDB).filter(
+        or_(
+            PortalUserDB.display_name.ilike(clean_owner),
+            PortalUserDB.email.ilike(clean_owner),
+        )
+    ).first()
+    if not pm_user and clean_owner.isdigit():
+        pm_user = db.query(PortalUserDB).filter(PortalUserDB.id == int(clean_owner)).first()
+
+    if not pm_user:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Selected Project Manager '{clean_owner}' not found in registered portal users.",
+        )
+
+    # 2. Read and parse file
+    content = await _read_and_validate_upload(file, (".mpp", ".xml"))
+    filename = os.path.basename(file.filename or "imported_schedule.mpp")
+
+    try:
+        parsed = parse_project_file(content, filename)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse project file: {str(e)}")
+
+    # 3. Project Name: "for project name please use top TASK description from MPP file"
+    top_task_desc = (
+        parsed.get("task_name")
+        or parsed.get("title")
+        or parsed.get("notes")
+        or os.path.splitext(filename)[0]
+    )
+    if isinstance(top_task_desc, str):
+        top_task_desc = top_task_desc.strip()
+    project_name = top_task_desc or os.path.splitext(filename)[0]
+
+    # 4. Resolve ERP number
+    candidate_erp = (erp_number or "").strip() or (parsed.get("erp_number") or "").strip()
+    if candidate_erp:
+        existing = db.query(ProjectDB).filter(ProjectDB.erp_number.ilike(candidate_erp)).first()
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Project with ERP number '{candidate_erp}' already exists ({existing.name}).",
+            )
+        final_erp = candidate_erp
+    else:
+        # Auto-generate unique ERP number
+        prefix = f"PRJ-{date.today().year}-"
+        for _ in range(100):
+            cand = f"{prefix}{uuid.uuid4().hex[:6].upper()}"
+            if not db.query(ProjectDB).filter(ProjectDB.erp_number == cand).first():
+                final_erp = cand
+                break
+        else:
+            final_erp = f"{prefix}{int(datetime.utcnow().timestamp())}"
+
+    # 5. Resolve Calendar ID
+    target_cal_id = calendar_id or 1
+    cal = db.query(CalendarDB).filter(CalendarDB.id == target_cal_id).first()
+    if not cal:
+        first_cal = db.query(CalendarDB).first()
+        target_cal_id = first_cal.id if first_cal else 1
+
+    # 6. Budget calculation alignment
+    effective_budget = parsed.get("budget_cost", 0.0) or 0.0
+
+    # 7. Create ProjectDB
+    new_project = ProjectDB(
+        project_guid=str(uuid.uuid4()),
+        erp_number=final_erp,
+        name=project_name[:255],
+        owner=pm_user.display_name,
+        calendar_id=target_cal_id,
+        start_date=parsed.get("start_date") or date.today(),
+        status="OPEN",
+        budget_cost=effective_budget,
+        last_updated_by=user.email,
+        last_updated_at=datetime.utcnow(),
+    )
+    db.add(new_project)
+    db.flush()
+
+    # 8. Link active stage definitions
+    active_stages = db.query(StageDefinitionDB).filter(StageDefinitionDB.is_active == True).all()
+    for s_def in active_stages:
+        st_status = ProjectStageStatusDB(
+            project_id=new_project.id,
+            stage_id=s_def.id,
+            status=StageStatusEnum.NOT_DONE,
+            updated_by=user.email,
+        )
+        db.add(st_status)
+
+    # 9. Link team resources if found in file
+    file_resources = parsed.get("resources", [])
+    for r_info in file_resources:
+        r_name = r_info.get("name")
+        if r_name:
+            match_res = db.query(ResourceDB).filter(ResourceDB.name.ilike(r_name.strip())).first()
+            if match_res:
+                db.add(ProjectTeamResourceDB(project_id=new_project.id, resource_id=match_res.id))
+
+    # 10. Initial project snapshot capturing all parsed metrics
+    init_snap = ProjectSnapshotDB(
+        project_id=new_project.id,
+        percent_complete=parsed.get("percent_complete", 0.0),
+        percent_work_complete=parsed.get("percent_work_complete", 0.0),
+        start_date=parsed.get("start_date") or new_project.start_date,
+        finish_date=parsed.get("finish_date"),
+        baseline_finish=parsed.get("baseline_finish"),
+        actual_cost=parsed.get("actual_cost", 0.0),
+        cost=parsed.get("cost", 0.0),
+        baseline_cost=parsed.get("baseline_cost", 0.0),
+        baseline_budget=parsed.get("baseline_budget", 0.0),
+        budget_cost=new_project.budget_cost,
+        source="MPP_IMPORT",
+    )
+    db.add(init_snap)
+
+    # 11. Audit log
+    audit = AuditLogDB(
+        entity_type="PROJECT",
+        entity_id=str(new_project.id),
+        action="IMPORT_MPP",
+        changed_by=user.email,
+        details=f"Imported project '{new_project.name}' (ERP: {new_project.erp_number}) from '{filename}', assigned to PM '{pm_user.display_name}' ({pm_user.email})",
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(new_project)
+
+    return {
+        "id": new_project.id,
+        "project_guid": new_project.project_guid,
+        "erp_number": new_project.erp_number,
+        "name": new_project.name,
+        "owner": new_project.owner,
+        "budget_cost": new_project.budget_cost,
+        "calendar_id": new_project.calendar_id,
+        "status": new_project.status,
+        "start_date": new_project.start_date.isoformat() if new_project.start_date else None,
+        "message": f"Project '{new_project.name}' imported successfully from '{filename}'",
+    }
+
 
 
 # --- Entra ID (Azure AD) Selective Directory Integration ---

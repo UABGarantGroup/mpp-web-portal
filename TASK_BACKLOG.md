@@ -23,4 +23,5 @@
 - [x] Align Baseline Cost, Budget Cost, and Baseline Budget Cost parsing and snapshot calculation with Microsoft Project logic during schedule upload action.
 - [x] Microsoft SQL Server migration engine, dialect abstraction (pyodbc/pymssql), container compose (`docker-compose.mssql.yml`), and automated data transfer utility (`backend/app/scripts/migrate_to_mssql.py`).
 - [x] Fix character encoding mojibake for Baltic and international text: enforce native NVARCHAR Unicode columns on Microsoft SQL Server and add defensive Baltic mojibake restoration utility.
-- [x] Add option to remove calendar from calendar list for Administrator role users (`DELETE /api/calendars/{calendar_id}`) with cascade cleanup, assignment guards, and audit trail.
+- [x] Add option to remove calendar from calendar list for Administrator role users (`DELETE /api/calendars/{calendar_id}`) with cascade cleanup, assignment guards, and audit trail.
+- [x] Add function to import new project from MPP file (`POST /api/projects/import-mpp`), requiring Project Manager assignment from registered portal users and naming project from top task description.

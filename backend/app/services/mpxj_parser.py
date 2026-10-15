@@ -172,6 +172,9 @@ def parse_project_xml(file_bytes: bytes) -> Dict[str, Any]:
         if task_0 is None:
             task_0 = tasks[0]
 
+    task_0_name = find_text(task_0, f"{prefix}Name") if task_0 is not None else None
+    task_0_notes = find_text(task_0, f"{prefix}Notes") if task_0 is not None else None
+
     def parse_float(val, default=0.0):
         try:
             return float(val) if val is not None else default
@@ -311,6 +314,8 @@ def parse_project_xml(file_bytes: bytes) -> Dict[str, Any]:
 
     return {
         "title": title,
+        "task_name": task_0_name or title,
+        "notes": task_0_notes,
         "erp_number": erp_number,
         "percent_complete": percent_complete,
         "percent_work_complete": percent_work_complete,
@@ -355,6 +360,9 @@ def parse_with_mpxj(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         task_0 = None
         if tasks.size() > 0:
             task_0 = tasks.get(0)
+
+        task_0_name = str(task_0.getName()).strip() if (task_0 and task_0.getName()) else None
+        task_0_notes = str(task_0.getNotes()).strip() if (task_0 and task_0.getNotes()) else None
 
         def j_float(val):
             if val is None:
@@ -450,6 +458,8 @@ def parse_with_mpxj(file_bytes: bytes, filename: str) -> Dict[str, Any]:
 
         return {
             "title": title,
+            "task_name": task_0_name or title,
+            "notes": task_0_notes,
             "erp_number": erp_number,
             "percent_complete": percent_complete,
             "percent_work_complete": percent_work_complete,
