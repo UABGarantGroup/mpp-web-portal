@@ -31,6 +31,7 @@ from backend.app.db.models import (
     CalendarWorkingShiftDB,
     CustomFieldDB,
     PortalUserDB,
+    ProjectDB,
     RatePeriodDB,
     ResourceDB,
     ResourceFieldValueDB,
@@ -486,6 +487,59 @@ def toggle_hide_calendar(
     db.commit()
     db.refresh(cal)
     return map_db_calendar_to_model(cal)
+
+
+@router.delete("/api/calendars/{calendar_id}", tags=["Calendars"])
+def delete_calendar(
+    calendar_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["Admin"])),
+):
+    """
+    Permanently deletes a calendar for Administrator role users.
+    Validates that:
+    1. Calendar exists.
+    2. At least one enterprise calendar remains.
+    3. No resources are actively assigned to this calendar.
+    4. No projects are actively assigned to this calendar.
+    """
+    cal = db.query(CalendarDB).filter(CalendarDB.id == calendar_id).first()
+    if not cal:
+        raise HTTPException(status_code=404, detail="Calendar not found")
+
+    total_cals = db.query(CalendarDB).count()
+    if total_cals <= 1:
+        raise HTTPException(status_code=400, detail="Cannot delete the only remaining enterprise calendar.")
+
+    # Guard: resources assigned
+    res_count = db.query(ResourceDB).filter(ResourceDB.base_calendar_id == calendar_id).count()
+    if res_count > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot delete calendar '{cal.name}' because it is assigned to {res_count} resource(s). Reassign them to another calendar first.",
+        )
+
+    # Guard: projects assigned
+    proj_count = db.query(ProjectDB).filter(ProjectDB.calendar_id == calendar_id).count()
+    if proj_count > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot delete calendar '{cal.name}' because it is assigned to {proj_count} project(s). Reassign them to another calendar first.",
+        )
+
+    cal_name = cal.name
+    audit = AuditLogDB(
+        entity_type="Calendar",
+        entity_id=str(calendar_id),
+        action="DELETE",
+        changed_by=user.email,
+        details=f"Permanently removed calendar '{cal_name}' (id={calendar_id})",
+    )
+    db.add(audit)
+
+    db.delete(cal)
+    db.commit()
+    return {"status": "success", "message": f"Calendar '{cal_name}' deleted successfully", "id": calendar_id}
 
 
 @router.post("/api/calendars", response_model=CalendarModel, status_code=status.HTTP_201_CREATED, tags=["Calendars"])

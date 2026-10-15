@@ -2396,7 +2396,13 @@
                 ? `<button class="btn btn-sm btn-secondary" title="Hide calendar from project list" onclick="toggleCalendarActive(${c.id})"><i class="fa-solid fa-eye-slash"></i> Hide</button>`
                 : `<button class="btn btn-sm" style="background:#107c41;" title="Unhide calendar" onclick="toggleCalendarActive(${c.id})"><i class="fa-solid fa-eye"></i> Unhide</button>`
               }
+              ${isCurrentUserAdmin() ? `
+                <button class="btn btn-sm btn-secondary" style="color:#a80000;" title="Remove calendar" onclick="deleteCalendar(${c.id}, '${escapeQuote(c.name)}')">
+                  <i class="fa-solid fa-trash"></i> Delete
+                </button>
+              ` : ''}
             </div>
+
           </div>
 
           <h4 style="margin-top:1rem; font-size:0.85rem; color:#323130;"><i class="fa-solid fa-business-time"></i> Weekly Working Schedule:</h4>
@@ -2529,6 +2535,28 @@
         console.error("Toggle calendar active error:", e);
       }
     }
+
+    async function deleteCalendar(calId, calName) {
+      if (!confirm(`Are you sure you want to remove calendar "${calName}"?\n\nThis will permanently delete the calendar, its working schedule, and holiday exceptions.`)) {
+        return;
+      }
+      try {
+        const resp = await fetch(`/api/calendars/${calId}`, {
+          method: "DELETE",
+          headers: getAuthHeaders()
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          alert("Error: " + (err.detail || "Failed to remove calendar"));
+          return;
+        }
+        await loadCalendars();
+      } catch (e) {
+        console.error("Delete calendar error:", e);
+        alert("Failed to remove calendar: " + e.message);
+      }
+    }
+
 
     function openCalendarScheduleModal(calId) {
       editingCal = allCalendars.find(c => c.id === calId);

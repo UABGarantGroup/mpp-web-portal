@@ -31,6 +31,7 @@
 3. **Calendar & Working Time Engine:**
    - Base 5-day / 40-hour work week calendars.
    - Holiday and vacation exceptions (`DayWorking=0` / `DayWorking=1`) using `holidays` library.
+   - Admin calendar management: creation, weekly shift updates, renaming, hiding/unhiding, and permanent deletion (`DELETE /api/calendars/{calendar_id}`) with resource/project assignment guards and cascade cleanup.
 4. **Template Export & Schema Generator:**
    - Generates compliant MS Project XML templates containing injected resources, cost tables, extended attributes (`Text1-Text30`, `Cost1-Cost10`, `Flag1-Flag20`), and base calendars.
 5. **Authentication Gate & Portfolio Governance:**
