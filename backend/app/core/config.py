@@ -62,8 +62,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def process_settings(self) -> "Settings":
-        # Auto-construct MSSQL DATABASE_URL if MSSQL_HOST is specified and DATABASE_URL is default
-        if self.MSSQL_HOST and self.DATABASE_URL == "sqlite:///./mpp_hub.db":
+        # Auto-construct MSSQL DATABASE_URL if MSSQL_HOST is specified and not already an explicit MSSQL URL
+        if self.MSSQL_HOST and not self.DATABASE_URL.startswith("mssql"):
             import urllib.parse
             if self.MSSQL_TRUSTED_CONNECTION:
                 driver_clean = self.MSSQL_DRIVER.replace(" ", "+")

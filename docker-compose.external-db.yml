@@ -1,0 +1,23 @@
+# ==============================================================================
+# Docker Compose configuration for deployments with an EXTERNAL database
+# (e.g., Company Microsoft SQL Server, Azure SQL, or Remote PostgreSQL)
+# Reads database connection parameters directly from .env without running a local DB.
+#
+# Usage:
+#   docker compose -f docker-compose.external-db.yml up -d --build
+# ==============================================================================
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mpp-web-portal:latest
+    container_name: mpp-portal-backend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    environment:
+      - ENVIRONMENT=production

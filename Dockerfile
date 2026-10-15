@@ -31,6 +31,7 @@ COPY alembic.ini .
 # Environment defaults
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
+ENV JAVA_HOME=/usr/lib/jvm/default-java
 ENV JVM_PATH=""
 
 EXPOSE 8000

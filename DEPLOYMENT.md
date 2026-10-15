@@ -138,12 +138,33 @@ In **Microsoft Entra admin center / Azure Portal**:
 
 ## 5. Day-2 Operations, Updates & Backups
 
-### Updating the Portal to a New Version
+### Updating the Portal from GitHub (Automated)
+Run the one-command upgrade script:
+```bash
+cd /opt/mpp-portal
+# Upgrade current branch:
+sudo bash deploy/upgrade.sh
+
+# Or upgrade to a specific branch (e.g. main or feat/mssql-migration):
+sudo bash deploy/upgrade.sh feat/mssql-migration
+```
+
+This automated script:
+1. Creates a timestamped safety backup of `/opt/mpp-portal/.env`.
+2. Fetches and pulls the latest code from GitHub.
+3. Automatically selects the right Docker Compose configuration:
+   - External MS SQL Server / Remote DB: `docker-compose.external-db.yml`
+   - Bundled PostgreSQL: `docker-compose.yml`
+4. Rebuilds and restarts the backend container with zero lingering cache.
+5. Verifies backend container health (`/health` endpoint) and outputs container status.
+
+### Manual Update (Alternative)
 ```bash
 cd /opt/mpp-portal
 sudo git pull origin main
 sudo docker compose up -d --build
 ```
+*(If using external MS SQL Server: `sudo docker compose -f docker-compose.external-db.yml up -d --build`)*
 
 ### Checking Logs & Container Status
 ```bash
@@ -153,13 +174,16 @@ sudo docker compose logs -f backend
 ```
 
 ### Database Backup & Restore
-- **Manual Backup Now:**
+- **Manual Backup Now (PostgreSQL):**
   ```bash
   sudo /etc/cron.daily/mpp-portal-backup
   ls -lh /var/backups/mpp-portal/
   ```
-- **Restore from a Backup:**
+- **Restore from a Backup (PostgreSQL):**
   ```bash
   cd /opt/mpp-portal
   gunzip -c /var/backups/mpp-portal/mpp_hub_YYYYMMDD_HHMMSS.sql.gz | sudo docker compose exec -T db psql -U postgres -d mpp_hub
   ```
+- **MS SQL Server Backups:**
+  Managed directly via SQL Server Management Studio (SSMS) / SQL Server Agent maintenance plans on your database server host (`jupiteris.pg.dc`).
+
