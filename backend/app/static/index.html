@@ -224,6 +224,7 @@
         </div>
         <div style="display: flex; gap: 0.5rem;">
           <button class="btn btn-secondary" onclick="loadPortfolio()"><i class="fa-solid fa-rotate"></i> Refresh Grid</button>
+          <button class="btn btn-secondary" onclick="openImportProjectModal()"><i class="fa-solid fa-file-import"></i> Import from MPP</button>
           <button class="btn" onclick="switchTab('new-project')"><i class="fa-solid fa-plus"></i> Create New Project</button>
         </div>
       </div>
@@ -534,6 +535,50 @@
         <button class="btn btn-secondary" onclick="closeTransferProjectModal()">Cancel</button>
         <button class="btn" onclick="submitProjectTransfer()"><i class="fa-solid fa-check"></i> Transfer Ownership</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Import New Project from MPP Modal -->
+  <div id="import-project-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="width: 540px;">
+      <div class="modal-header">
+        <h3 id="import-modal-title"><i class="fa-solid fa-file-import" style="color:var(--primary);"></i> Import Project from MPP File</h3>
+        <button style="border:none;background:none;font-size:1.2rem;cursor:pointer;" onclick="closeImportProjectModal()">&times;</button>
+      </div>
+      <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
+        Import a project directly from an existing <strong>.mpp</strong> or <strong>.xml</strong> schedule. The project title will automatically be assigned from the <strong>top task description</strong>.
+      </p>
+      <form id="import-project-form" onsubmit="handleImportProject(event)">
+        <div class="form-group" style="margin-bottom:0.85rem;">
+          <label for="import-proj-owner">Assign Project Manager (Owner) *</label>
+          <select id="import-proj-owner" required style="width:100%; padding:0.5rem;">
+            <option value="">Select Project Manager (Portal User)...</option>
+          </select>
+          <small style="font-size:0.75rem; color:var(--text-muted); display:block; margin-top:0.2rem;">
+            Assign a responsible Project Manager from registered users before importing.
+          </small>
+        </div>
+        <div class="form-group" style="margin-bottom:0.85rem;">
+          <label for="import-proj-file">Select MS Project File (.mpp or .xml) *</label>
+          <input type="file" id="import-proj-file" accept=".mpp,.xml" required style="width:100%; padding:0.45rem; border:1px solid #d2d0ce; border-radius:4px; background:white;">
+        </div>
+        <div class="form-group" style="margin-bottom:0.85rem;">
+          <label for="import-proj-erp">ERP Project Code (Optional)</label>
+          <input type="text" id="import-proj-erp" placeholder="e.g. 26-0537 (leave blank to auto-detect or auto-generate)" style="width:100%; padding:0.5rem; border:1px solid #d2d0ce; border-radius:4px;">
+          <small style="font-size:0.75rem; color:var(--text-muted); display:block; margin-top:0.2rem;">
+            If left blank, extracted from MPP Text1 attribute or automatically generated.
+          </small>
+        </div>
+        <div class="form-group" style="margin-bottom:1rem;">
+          <label for="import-proj-calendar">Enterprise Base Calendar</label>
+          <select id="import-proj-calendar" style="width:100%; padding:0.5rem;"></select>
+        </div>
+        <div id="import-proj-error" class="badge" style="display:none; width:100%; box-sizing:border-box; background:#fde7e9; color:#a80000; padding:0.5rem; text-align:left; white-space:normal; font-size:0.8rem; border:1px solid #f8b4b8; margin-bottom:1rem;"></div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeImportProjectModal()">Cancel</button>
+          <button type="submit" id="btn-submit-import-proj" class="btn"><i class="fa-solid fa-file-import"></i> Import Project</button>
+        </div>
+      </form>
     </div>
   </div>
 
@@ -1940,6 +1985,133 @@
       }
     }
 
+    async function openImportProjectModal() {
+      document.getElementById("import-project-modal").style.display = "flex";
+      const errBox = document.getElementById("import-proj-error");
+      if (errBox) errBox.style.display = "none";
+      document.getElementById("import-proj-file").value = "";
+      document.getElementById("import-proj-erp").value = "";
+
+      // Load PM users
+      const ownerSelect = document.getElementById("import-proj-owner");
+      if (ownerSelect) {
+        ownerSelect.innerHTML = `<option value="">Loading project managers...</option>`;
+        try {
+          const usersResp = await fetch("/api/users?include_inactive=false", { headers: getAuthHeaders() });
+          if (usersResp.ok) {
+            const appUsers = await usersResp.json();
+            if (appUsers.length > 0) {
+              ownerSelect.innerHTML = `<option value="">Select Project Manager (Portal User)...</option>` + appUsers.map(u => {
+                const label = `${escapeHtml(u.display_name)} (${escapeHtml(u.email)}) - ${escapeHtml(u.role)}`;
+                return `<option value="${escapeHtml(u.display_name)}">${label}</option>`;
+              }).join("");
+
+              // Preselect current user if matching
+              if (currentAuthUser) {
+                const matched = appUsers.find(u => 
+                  (currentAuthUser.email && u.email && u.email.toLowerCase() === currentAuthUser.email.toLowerCase()) ||
+                  (currentAuthUser.display_name && u.display_name && u.display_name.toLowerCase() === currentAuthUser.display_name.toLowerCase()) ||
+                  (currentAuthUser.username && u.email && u.email.toLowerCase() === currentAuthUser.username.toLowerCase())
+                );
+                if (matched) {
+                  ownerSelect.value = matched.display_name;
+                }
+              }
+            } else {
+              ownerSelect.innerHTML = `<option value="">No active portal users found</option>`;
+            }
+          }
+        } catch (err) {
+          console.error("Failed to load portal users for import PM dropdown:", err);
+          ownerSelect.innerHTML = `<option value="">Failed to load users</option>`;
+        }
+      }
+
+      // Load calendars
+      const calSelect = document.getElementById("import-proj-calendar");
+      if (calSelect) {
+        try {
+          const calResp = await fetch("/api/calendars?include_inactive=false", { headers: getAuthHeaders() });
+          if (calResp.ok) {
+            const cals = await calResp.json();
+            calSelect.innerHTML = cals.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("");
+          }
+        } catch (err) {
+          console.error("Failed to load calendars for import modal:", err);
+        }
+      }
+    }
+
+    function closeImportProjectModal() {
+      document.getElementById("import-project-modal").style.display = "none";
+    }
+
+    async function handleImportProject(event) {
+      event.preventDefault();
+      const owner = document.getElementById("import-proj-owner").value.trim();
+      if (!owner) {
+        alert("Please select a Project Manager before importing.");
+        return;
+      }
+      const fileInput = document.getElementById("import-proj-file");
+      if (!fileInput.files || fileInput.files.length === 0) {
+        alert("Please select an MS Project schedule file (.mpp or .xml).");
+        return;
+      }
+      const file = fileInput.files[0];
+      const erp = document.getElementById("import-proj-erp").value.trim();
+      const calId = document.getElementById("import-proj-calendar").value;
+
+      const btn = document.getElementById("btn-submit-import-proj");
+      const origText = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Importing...`;
+
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("owner", owner);
+      if (erp) formData.append("erp_number", erp);
+      if (calId) formData.append("calendar_id", calId);
+
+      const errBox = document.getElementById("import-proj-error");
+      if (errBox) errBox.style.display = "none";
+
+      try {
+        const resp = await fetch("/api/projects/import-mpp", {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: formData
+        });
+        const result = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          const msg = result.detail || "Failed to import project schedule.";
+          if (errBox) {
+            errBox.textContent = msg;
+            errBox.style.display = "block";
+          } else {
+            alert("Import Error: " + msg);
+          }
+          return;
+        }
+
+        closeImportProjectModal();
+        alert(`Success! Project "${result.name || 'Imported Project'}" imported and assigned to PM.`);
+        switchTab("portfolio");
+        loadPortfolio();
+      } catch (err) {
+        console.error("Import error:", err);
+        if (errBox) {
+          errBox.textContent = err.message || "Network error importing project.";
+          errBox.style.display = "block";
+        } else {
+          alert("Error: " + err.message);
+        }
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = origText;
+      }
+    }
+
     // --- SCHEDULE UPLOAD & REFRESH WIZARD (Phase 4) ---
 
     function openUploadScheduleModal(projectId) {
@@ -2396,7 +2568,13 @@
                 ? `<button class="btn btn-sm btn-secondary" title="Hide calendar from project list" onclick="toggleCalendarActive(${c.id})"><i class="fa-solid fa-eye-slash"></i> Hide</button>`
                 : `<button class="btn btn-sm" style="background:#107c41;" title="Unhide calendar" onclick="toggleCalendarActive(${c.id})"><i class="fa-solid fa-eye"></i> Unhide</button>`
               }
+              ${isCurrentUserAdmin() ? `
+                <button class="btn btn-sm btn-secondary" style="color:#a80000;" title="Remove calendar" onclick="deleteCalendar(${c.id}, '${escapeQuote(c.name)}')">
+                  <i class="fa-solid fa-trash"></i> Delete
+                </button>
+              ` : ''}
             </div>
+
           </div>
 
           <h4 style="margin-top:1rem; font-size:0.85rem; color:#323130;"><i class="fa-solid fa-business-time"></i> Weekly Working Schedule:</h4>
@@ -2529,6 +2707,28 @@
         console.error("Toggle calendar active error:", e);
       }
     }
+
+    async function deleteCalendar(calId, calName) {
+      if (!confirm(`Are you sure you want to remove calendar "${calName}"?\n\nThis will permanently delete the calendar, its working schedule, and holiday exceptions.`)) {
+        return;
+      }
+      try {
+        const resp = await fetch(`/api/calendars/${calId}`, {
+          method: "DELETE",
+          headers: getAuthHeaders()
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          alert("Error: " + (err.detail || "Failed to remove calendar"));
+          return;
+        }
+        await loadCalendars();
+      } catch (e) {
+        console.error("Delete calendar error:", e);
+        alert("Failed to remove calendar: " + e.message);
+      }
+    }
+
 
     function openCalendarScheduleModal(calId) {
       editingCal = allCalendars.find(c => c.id === calId);

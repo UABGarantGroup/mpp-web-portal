@@ -71,31 +71,112 @@ def _ensure_schema_columns() -> None:
             cal_cols = {c["name"] for c in inspector.get_columns("calendars")}
             with engine.begin() as conn:
                 if "hours_per_day" not in cal_cols:
-                    conn.execute(text("ALTER TABLE calendars ADD COLUMN hours_per_day FLOAT NOT NULL DEFAULT 8.0"))
+                    conn.execute(text("ALTER TABLE calendars ADD hours_per_day FLOAT NOT NULL DEFAULT 8.0"))
                 if "hours_per_week" not in cal_cols:
-                    conn.execute(text("ALTER TABLE calendars ADD COLUMN hours_per_week FLOAT NOT NULL DEFAULT 40.0"))
+                    conn.execute(text("ALTER TABLE calendars ADD hours_per_week FLOAT NOT NULL DEFAULT 40.0"))
                 if "days_per_month" not in cal_cols:
-                    conn.execute(text("ALTER TABLE calendars ADD COLUMN days_per_month INTEGER NOT NULL DEFAULT 20"))
+                    conn.execute(text("ALTER TABLE calendars ADD days_per_month INTEGER NOT NULL DEFAULT 20"))
 
         if "calendar_exceptions" in table_names:
             exc_cols = {c["name"] for c in inspector.get_columns("calendar_exceptions")}
+            shift_type = "NVARCHAR(8)" if engine.dialect.name == "mssql" else "VARCHAR(8)"
             with engine.begin() as conn:
                 if "shift1_from" not in exc_cols:
-                    conn.execute(text("ALTER TABLE calendar_exceptions ADD COLUMN shift1_from VARCHAR(8)"))
+                    conn.execute(text(f"ALTER TABLE calendar_exceptions ADD shift1_from {shift_type}"))
                 if "shift1_to" not in exc_cols:
-                    conn.execute(text("ALTER TABLE calendar_exceptions ADD COLUMN shift1_to VARCHAR(8)"))
+                    conn.execute(text(f"ALTER TABLE calendar_exceptions ADD shift1_to {shift_type}"))
                 if "shift2_from" not in exc_cols:
-                    conn.execute(text("ALTER TABLE calendar_exceptions ADD COLUMN shift2_from VARCHAR(8)"))
+                    conn.execute(text(f"ALTER TABLE calendar_exceptions ADD shift2_from {shift_type}"))
                 if "shift2_to" not in exc_cols:
-                    conn.execute(text("ALTER TABLE calendar_exceptions ADD COLUMN shift2_to VARCHAR(8)"))
+                    conn.execute(text(f"ALTER TABLE calendar_exceptions ADD shift2_to {shift_type}"))
 
         if "resources" in table_names:
             res_cols = {c["name"] for c in inspector.get_columns("resources")}
             with engine.begin() as conn:
                 if "base_calendar_id" not in res_cols:
-                    conn.execute(text("ALTER TABLE resources ADD COLUMN base_calendar_id INTEGER NOT NULL DEFAULT 1"))
+                    conn.execute(text("ALTER TABLE resources ADD base_calendar_id INTEGER NOT NULL DEFAULT 1"))
     except Exception as e:
         print("Schema column check notice:", e)
+
+
+def _ensure_mssql_unicode() -> None:
+    """Ensures MS SQL Server tables use NVARCHAR for string columns to prevent mojibake."""
+    if engine.dialect.name != "mssql":
+        return
+    from sqlalchemy import text
+
+    target_columns = [
+        ("calendar_exceptions", "name", "NVARCHAR(255)", "NOT NULL"),
+        ("calendars", "name", "NVARCHAR(255)", "NOT NULL"),
+        ("portal_users", "display_name", "NVARCHAR(255)", "NOT NULL"),
+        ("portal_users", "group_name", "NVARCHAR(255)", "NULL"),
+        ("projects", "name", "NVARCHAR(255)", "NOT NULL"),
+        ("projects", "owner", "NVARCHAR(255)", "NULL"),
+        ("projects", "last_updated_by", "NVARCHAR(255)", "NULL"),
+        ("resources", "name", "NVARCHAR(255)", "NOT NULL"),
+        ("resources", "department", "NVARCHAR(255)", "NULL"),
+        ("custom_fields", "field_name", "NVARCHAR(255)", "NOT NULL"),
+        ("custom_fields", "alias", "NVARCHAR(255)", "NULL"),
+        ("custom_fields", "default_value", "NVARCHAR(255)", "NULL"),
+        ("field_lookup_values", "value", "NVARCHAR(255)", "NOT NULL"),
+        ("resource_field_values", "value", "NVARCHAR(500)", "NOT NULL"),
+        ("stage_definitions", "name", "NVARCHAR(255)", "NOT NULL"),
+        ("audit_logs", "changed_by", "NVARCHAR(255)", "NOT NULL"),
+        ("audit_logs", "details", "NVARCHAR(MAX)", "NULL"),
+        ("project_stage_statuses", "updated_by", "NVARCHAR(255)", "NULL"),
+    ]
+    try:
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            for tbl, col, col_type, nullability in target_columns:
+                curr = conn.execute(
+                    text(
+                        "SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = :tbl AND COLUMN_NAME = :col"
+                    ),
+                    {"tbl": tbl, "col": col},
+                ).fetchone()
+
+                if not curr or curr[0].lower() == "nvarchar":
+                    continue
+
+                # Check for dependent indexes
+                idx_rows = conn.execute(
+                    text(
+                        """
+                        SELECT i.name, i.is_unique,
+                               STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal) AS col_list
+                        FROM sys.indexes i
+                        JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+                        JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                        WHERE i.object_id = OBJECT_ID(:table)
+                          AND i.is_primary_key = 0
+                          AND EXISTS (
+                              SELECT 1 FROM sys.index_columns ic2
+                              JOIN sys.columns c2 ON ic2.object_id = c2.object_id AND ic2.column_id = c2.column_id
+                              WHERE ic2.object_id = i.object_id AND ic2.index_id = i.index_id AND c2.name = :col
+                          )
+                        GROUP BY i.name, i.is_unique
+                    """
+                    ),
+                    {"table": f"dbo.{tbl}", "col": col},
+                ).fetchall()
+
+                for idx_name, is_uniq, col_list in idx_rows:
+                    try:
+                        conn.execute(text(f"DROP INDEX [{idx_name}] ON [{tbl}]"))
+                    except Exception:
+                        pass
+
+                conn.execute(text(f"ALTER TABLE [{tbl}] ALTER COLUMN [{col}] {col_type} {nullability}"))
+
+                for idx_name, is_uniq, col_list in idx_rows:
+                    uniq_str = "UNIQUE " if is_uniq else ""
+                    try:
+                        conn.execute(text(f"CREATE {uniq_str}INDEX [{idx_name}] ON [{tbl}] ({col_list})"))
+                    except Exception:
+                        pass
+    except Exception as e:
+        print("MSSQL Unicode column check notice:", e)
+
 
 
 def _sync_postgres_sequences(db: Session) -> None:
@@ -132,6 +213,7 @@ def init_db(db: Session) -> None:
     # Create tables and ensure new columns exist on upgraded databases
     Base.metadata.create_all(bind=engine)
     _ensure_schema_columns()
+    _ensure_mssql_unicode()
 
     # 1. Seed Calendars if empty
     if not db.query(CalendarDB).first():

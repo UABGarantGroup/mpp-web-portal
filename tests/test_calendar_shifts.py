@@ -402,3 +402,67 @@ def test_resource_base_calendar_inheritance_and_override(client):
     client.put("/api/resources/2/calendar", json={"base_calendar_id": 1})
 
 
+def test_calendar_delete_endpoint(client, db_session):
+    """Verifies that Administrator can remove a calendar, with RBAC and reference integrity guards."""
+    # 1. Create a disposable calendar
+    create_payload = {
+        "name": "Disposable Test Calendar",
+        "country_code": "LT",
+        "is_active": True,
+        "weekdays": [
+            {
+                "day_type": dt,
+                "day_working": dt not in (1, 7),
+                "working_times": [
+                    {"from_time": "08:00:00", "to_time": "12:00:00"},
+                    {"from_time": "13:00:00", "to_time": "17:00:00"}
+                ] if dt not in (1, 7) else []
+            }
+            for dt in range(1, 8)
+        ]
+    }
+    r_create = client.post("/api/calendars", json=create_payload, headers={"X-User-Role": "Admin"})
+    assert r_create.status_code == 201
+    cal_id = r_create.json()["id"]
+
+    # 2. Non-admin cannot delete calendar (RBAC 403)
+    r_forbidden = client.delete(f"/api/calendars/{cal_id}", headers={"X-User-Role": "PM", "X-User-Email": "pm@enterprise.com"})
+    assert r_forbidden.status_code == 403
+
+    # 3. Guard: Cannot delete if resources are assigned to it
+    from backend.app.db.models import ResourceDB
+    res = ResourceDB(
+        guid="test-cal-res-guid",
+        name="Calendar Guard Resource",
+        email="guard@garant.lt",
+        resource_type="WORK",
+        resource_kind="GENERIC",
+        base_calendar_id=cal_id,
+        is_active=True
+    )
+    db_session.add(res)
+    db_session.commit()
+
+    r_guard_res = client.delete(f"/api/calendars/{cal_id}", headers={"X-User-Role": "Admin"})
+    assert r_guard_res.status_code == 400
+    assert "assigned to 1 resource" in r_guard_res.json()["detail"]
+
+    # Clean up resource
+    db_session.delete(res)
+    db_session.commit()
+
+    # 4. Successful deletion by Admin
+    r_del = client.delete(f"/api/calendars/{cal_id}", headers={"X-User-Role": "Admin"})
+    assert r_del.status_code == 200
+    assert r_del.json()["status"] == "success"
+
+    # 5. Verify calendar is gone
+    r_get = client.get(f"/api/calendars/{cal_id}")
+    assert r_get.status_code == 404
+
+    # 6. Deleting non-existent calendar returns 404
+    r_not_found = client.delete("/api/calendars/999999", headers={"X-User-Role": "Admin"})
+    assert r_not_found.status_code == 404
+
+
+

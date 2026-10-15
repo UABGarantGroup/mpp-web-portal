@@ -422,39 +422,77 @@ class EntraGraphService:
 
     def get_group_members(self, group_id: str) -> List[Dict[str, Any]]:
         """
-        Retrieves user members of an Entra ID security group.
-        Uses /transitiveMembers (including nested groups) with fallback to /members.
+        Retrieves all user members of an Entra ID security group.
+        Uses /transitiveMembers/microsoft.graph.user (including nested groups)
+        with fallback to /transitiveMembers, /members/microsoft.graph.user, and /members.
+        Follows @odata.nextLink to retrieve all pages without truncation.
         """
         token = self._acquire_token()
         if token:
             try:
-                url = (
-                    f"https://graph.microsoft.com/v1.0/groups/{group_id}/transitiveMembers"
-                    f"?$select=id,displayName,mail,userPrincipalName,jobTitle,department"
-                )
-                with httpx.Client(timeout=12.0) as client:
-                    resp = client.get(url, headers={"Authorization": f"Bearer {token}"})
-                    if resp.status_code != 200:
-                        # Fallback to direct members
-                        url = f"https://graph.microsoft.com/v1.0/groups/{group_id}/members?$select=id,displayName,mail,userPrincipalName,jobTitle,department"
-                        resp = client.get(url, headers={"Authorization": f"Bearer {token}"})
+                candidate_urls = [
+                    f"https://graph.microsoft.com/v1.0/groups/{group_id}/transitiveMembers/microsoft.graph.user?$select=id,displayName,mail,userPrincipalName,jobTitle,department&$top=999",
+                    f"https://graph.microsoft.com/v1.0/groups/{group_id}/transitiveMembers?$select=id,displayName,mail,userPrincipalName,jobTitle,department&$top=999",
+                    f"https://graph.microsoft.com/v1.0/groups/{group_id}/members/microsoft.graph.user?$select=id,displayName,mail,userPrincipalName,jobTitle,department&$top=999",
+                    f"https://graph.microsoft.com/v1.0/groups/{group_id}/members?$select=id,displayName,mail,userPrincipalName,jobTitle,department&$top=999",
+                ]
 
-                    if resp.status_code == 200:
-                        data = resp.json().get("value", [])
-                        return [
-                            {
-                                "id": u.get("id"),
-                                "display_name": u.get("displayName") or u.get("mail") or "Unknown",
-                                "email": u.get("mail") or u.get("userPrincipalName", ""),
-                                "upn": u.get("userPrincipalName", ""),
-                                "job_title": u.get("jobTitle") or "",
-                                "department": u.get("department") or "",
-                            }
-                            for u in data
-                            if "@" in (u.get("mail") or u.get("userPrincipalName", ""))
-                        ]
+                all_members: List[Dict[str, Any]] = []
+                seen_ids = set()
+                seen_emails = set()
+
+                with httpx.Client(timeout=30.0) as client:
+                    for initial_url in candidate_urls:
+                        current_url = initial_url
+                        page_succeeded = False
+
+                        while current_url:
+                            resp = client.get(current_url, headers={"Authorization": f"Bearer {token}"})
+                            if resp.status_code != 200:
+                                break
+                            page_succeeded = True
+                            page_json = resp.json()
+                            items = page_json.get("value", [])
+
+                            for u in items:
+                                u_id = u.get("id")
+                                if u_id and u_id in seen_ids:
+                                    continue
+
+                                # If untyped endpoint returned a non-user object (e.g. group or device), skip
+                                odata_type = u.get("@odata.type", "")
+                                if odata_type and "user" not in odata_type.lower():
+                                    continue
+
+                                raw_email = u.get("mail") or u.get("userPrincipalName", "")
+                                if not raw_email or "@" not in raw_email:
+                                    continue
+
+                                norm_email = raw_email.strip().lower()
+                                if norm_email in seen_emails:
+                                    continue
+
+                                if u_id:
+                                    seen_ids.add(u_id)
+                                seen_emails.add(norm_email)
+
+                                all_members.append({
+                                    "id": u_id or f"oid-{len(all_members)+1}",
+                                    "display_name": u.get("displayName") or norm_email.split("@")[0].title(),
+                                    "email": norm_email,
+                                    "upn": (u.get("userPrincipalName") or norm_email).strip().lower(),
+                                    "job_title": u.get("jobTitle") or "",
+                                    "department": u.get("department") or "",
+                                })
+
+                            current_url = page_json.get("@odata.nextLink")
+
+                        if page_succeeded:
+                            logger.info("Retrieved %d total members from group %s", len(all_members), group_id)
+                            return all_members
+
             except Exception as e:
-                logger.exception(f"Error fetching group members from Microsoft Graph: {e}")
+                logger.exception("Error fetching group members from Microsoft Graph: %s", e)
 
         # Fallback to mock groups
         for g in MOCK_SECURITY_GROUPS:
