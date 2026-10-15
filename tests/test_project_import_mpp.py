@@ -134,3 +134,22 @@ def test_import_mpp_success_uses_top_task_description_and_assigns_pm(client, db_
     assert len(matching) == 1
     assert matching[0]["name"] == top_task_description
     assert matching[0]["owner"] == pm.display_name
+
+
+def test_mpxj_jvm_discovery_and_initialization():
+    """
+    Verifies that _find_jvm_path locates a valid JVM library,
+    and _init_mpxj() starts the JVM cleanly without raising unhandled errors.
+    """
+    import os
+    from backend.app.services.mpxj_parser import _find_jvm_path, _init_mpxj
+
+    jvm_path = _find_jvm_path()
+    # If a JVM is present on the environment (e.g., local dev or docker), ensure it exists
+    if jvm_path:
+        assert os.path.exists(jvm_path)
+        assert os.path.isfile(jvm_path)
+        # Verify MPXJ initializes successfully with the discovered JVM
+        init_ok = _init_mpxj()
+        assert init_ok is True
+

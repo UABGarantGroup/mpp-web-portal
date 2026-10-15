@@ -15,6 +15,58 @@ logger = logging.getLogger(__name__)
 _jvm_initialized = False
 
 
+def _find_jvm_path() -> Optional[str]:
+    """
+    Locates the Java Virtual Machine shared library (jvm.dll or libjvm.so).
+    Checks configuration, JAVA_HOME, common Windows installation paths, and jpype defaults.
+    """
+    from backend.app.core.config import settings
+
+    # 1. Configured JVM path
+    if settings.JVM_PATH and os.path.exists(settings.JVM_PATH):
+        return settings.JVM_PATH
+
+    # 2. JAVA_HOME environment variable
+    java_home = os.environ.get("JAVA_HOME")
+    if java_home:
+        candidates = [
+            os.path.join(java_home, "bin", "server", "jvm.dll"),
+            os.path.join(java_home, "lib", "server", "libjvm.so"),
+            os.path.join(java_home, "lib", "server", "libjvm.dylib"),
+        ]
+        for c in candidates:
+            if os.path.exists(c):
+                return c
+
+    # 3. Common Windows JDK / JRE / Android Studio runtime locations
+    if os.name == "nt":
+        common_candidates = [
+            r"C:\Program Files\Android\Android Studio\jbr\bin\server\jvm.dll",
+            r"C:\Program Files\Java",
+            r"C:\Program Files\Eclipse Adoptium",
+            r"C:\Program Files\Microsoft",
+            r"C:\Program Files\Amazon Corretto",
+        ]
+        for candidate in common_candidates:
+            if os.path.isfile(candidate):
+                return candidate
+            if os.path.isdir(candidate):
+                for root, _, files in os.walk(candidate):
+                    if "jvm.dll" in files:
+                        return os.path.join(root, "jvm.dll")
+
+    # 4. Fallback to jpype default JVM path (standard on Linux/Docker)
+    try:
+        import jpype
+        default_path = jpype.getDefaultJVMPath()
+        if default_path and os.path.exists(default_path):
+            return default_path
+    except Exception as e:
+        logger.debug("jpype.getDefaultJVMPath() exception: %s", e)
+
+    return None
+
+
 def _init_mpxj():
     global _jvm_initialized
     if _jvm_initialized:
@@ -26,57 +78,51 @@ def _init_mpxj():
             _jvm_initialized = True
             return True
 
-        from backend.app.core.config import settings
         import mpxj
 
         mpxj_dir = os.path.join(os.path.dirname(mpxj.__file__), "lib")
         jars = [os.path.join(mpxj_dir, f) for f in os.listdir(mpxj_dir) if f.endswith(".jar")]
 
-        jvm_path = settings.JVM_PATH
+        jvm_path = _find_jvm_path()
         if not jvm_path or not os.path.exists(jvm_path):
-            # Try JAVA_HOME
-            java_home = os.environ.get("JAVA_HOME")
-            if java_home:
-                candidates = [
-                    os.path.join(java_home, "bin", "server", "jvm.dll"),
-                    os.path.join(java_home, "lib", "server", "libjvm.so"),
-                ]
-                for c in candidates:
-                    if os.path.exists(c):
-                        jvm_path = c
-                        break
+            logger.warning("JVM path not found (checked settings.JVM_PATH, JAVA_HOME, system paths, and jpype defaults). .mpp parsing unavailable; .xml fallback available.")
+            return False
 
-            # Fallback to jpype default JVM path (standard on Linux/Docker)
-            if not jvm_path or not os.path.exists(jvm_path):
+        # Windows-specific DLL directory discovery for Java runtime
+        if os.name == "nt":
+            jvm_dir = os.path.dirname(jvm_path)
+            jvm_bin_dir = os.path.abspath(os.path.join(jvm_dir, ".."))
+            if hasattr(os, "add_dll_directory"):
                 try:
-                    jvm_path = jpype.getDefaultJVMPath()
-                except Exception as e:
-                    logger.debug("jpype.getDefaultJVMPath() exception: %s", e)
+                    os.add_dll_directory(jvm_dir)
+                    os.add_dll_directory(jvm_bin_dir)
+                except Exception:
+                    pass
+            current_path = os.environ.get("PATH", "")
+            if jvm_bin_dir not in current_path:
+                os.environ["PATH"] = jvm_bin_dir + os.pathsep + current_path
 
-            # Windows-specific DLL directory discovery for Java runtime
-            if os.name == "nt":
-                jvm_bin_dir = os.path.abspath(os.path.join(os.path.dirname(jvm_path), ".."))
-                if hasattr(os, "add_dll_directory"):
-                    try:
-                        os.add_dll_directory(jvm_bin_dir)
-                        os.add_dll_directory(os.path.dirname(jvm_path))
-                    except Exception:
-                        pass
-                if jvm_bin_dir not in os.environ.get("PATH", ""):
-                    os.environ["PATH"] = jvm_bin_dir + os.pathsep + os.environ.get("PATH", "")
+        # Python's faulthandler registers a first-chance VectoredExceptionHandler on Windows
+        # which logs HotSpot JVM's normal internal guard-page probing. Pause faulthandler during startup.
+        import faulthandler
+        fault_was_enabled = faulthandler.is_enabled()
+        if fault_was_enabled:
+            faulthandler.disable()
 
+        try:
             jpype.startJVM(
                 jvm_path,
                 "-Djava.awt.headless=true",
                 "-Dorg.apache.logging.log4j.simplelog.StatusLogger.level=OFF",
                 classpath=jars
             )
-            _jvm_initialized = True
-            logger.info("MPXJ JVM started successfully with %s (headless mode)", jvm_path)
-            return True
-        else:
-            logger.warning("JVM path not found (checked settings.JVM_PATH and jpype defaults). .mpp parsing unavailable; .xml fallback available.")
-            return False
+        finally:
+            if fault_was_enabled:
+                faulthandler.enable()
+
+        _jvm_initialized = True
+        logger.info("MPXJ JVM started successfully with %s (headless mode)", jvm_path)
+        return True
     except Exception as e:
         logger.warning("Failed to initialize MPXJ JVM: %s", e)
         return False

@@ -44,6 +44,7 @@
    - Work baseline costs roll up from leaf tasks when summary baseline cost is omitted or zero.
    - Harmonizes project master budget (`ProjectDB.budget_cost`) and snapshot metrics upon schedule upload.
    - Direct MPP Project Import (`POST /api/projects/import-mpp`): creates new projects directly from `.mpp` or `.xml` schedules, requiring PM assignment from registered portal users, deriving project title from top task description, and provisioning baseline snapshot metrics.
+   - Robust JVM & MPXJ runtime bridge (`_find_jvm_path`): automatically discovers JVM libraries across `settings.JVM_PATH`, `JAVA_HOME`, Windows JDK/JBR installations (Android Studio JBR, Adoptium, Corretto, Microsoft OpenJDK), and JPype defaults, while isolating first-chance Windows probe signals.
 
 7. **Microsoft SQL Server Engine & Migration Automation:**
    - Dialect-aware connection pooling and engine initialization (`configure_engine`) supporting `mssql+pyodbc` (with `fast_executemany`) and `mssql+pymssql`.

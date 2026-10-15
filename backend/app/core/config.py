@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     AUTH_ENABLED: bool = False  # Enforced True automatically when ENVIRONMENT=="production"
 
     # JVM & MPXJ (for .mpp reading)
-    JVM_PATH: str = r"C:\Program Files\Android\Android Studio\jbr\bin\server\jvm.dll"
+    JVM_PATH: str = ""
 
     # Security, Upload Limits & CORS
     CORS_ORIGINS: List[str] = [
