@@ -78,38 +78,62 @@ from backend.app.services.xml_generator import build_ms_project_xml
 
 router = APIRouter()
 
-# Brute-force rate limiter state for authentication endpoints (IP -> list of failure timestamps)
+# Brute-force rate limiter state for authentication endpoints (key -> list of failure timestamps)
 _AUTH_FAILED_ATTEMPTS: Dict[str, List[float]] = defaultdict(list)
 _AUTH_RATE_WINDOW_SECONDS = 300  # 5 minutes
 _AUTH_MAX_FAILED_ATTEMPTS = 8
+_TRUSTED_PROXIES = {"127.0.0.1", "::1", "localhost"}
 
 
 def _get_client_ip(request: Optional[Request]) -> str:
+    """
+    Safely extracts the client IP address.
+    Only trusts X-Real-IP or the rightmost proxy-appended X-Forwarded-For value
+    when the immediate peer is a trusted local reverse proxy (e.g., NGINX on 127.0.0.1).
+    Prevents attackers from bypassing rate limits via forged X-Forwarded-For headers.
+    """
     if not request:
         return "unknown"
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    peer_ip = request.client.host if request.client else "unknown"
+    if peer_ip in _TRUSTED_PROXIES:
+        real_ip = request.headers.get("X-Real-IP")
+        if real_ip and real_ip.strip():
+            return real_ip.strip()
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            # Take the rightmost IP appended by our local reverse proxy, not client-supplied index 0
+            parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+            if parts:
+                return parts[-1]
+    return peer_ip
 
 
-def _check_auth_rate_limit(client_ip: str) -> None:
+def _check_auth_rate_limit(client_ip: str, account_key: Optional[str] = None) -> None:
     now = time.time()
-    recent = [ts for ts in _AUTH_FAILED_ATTEMPTS[client_ip] if now - ts < _AUTH_RATE_WINDOW_SECONDS]
-    _AUTH_FAILED_ATTEMPTS[client_ip] = recent
-    if len(recent) >= _AUTH_MAX_FAILED_ATTEMPTS:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many failed authentication attempts. Please wait 5 minutes before trying again.",
-        )
+    keys_to_check = [client_ip]
+    if account_key:
+        keys_to_check.append(f"acct:{account_key}")
+    for key in keys_to_check:
+        recent = [ts for ts in _AUTH_FAILED_ATTEMPTS[key] if now - ts < _AUTH_RATE_WINDOW_SECONDS]
+        _AUTH_FAILED_ATTEMPTS[key] = recent
+        if len(recent) >= _AUTH_MAX_FAILED_ATTEMPTS:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many failed authentication attempts. Please wait 5 minutes before trying again.",
+            )
 
 
-def _record_auth_failure(client_ip: str) -> None:
-    _AUTH_FAILED_ATTEMPTS[client_ip].append(time.time())
+def _record_auth_failure(client_ip: str, account_key: Optional[str] = None) -> None:
+    now = time.time()
+    _AUTH_FAILED_ATTEMPTS[client_ip].append(now)
+    if account_key:
+        _AUTH_FAILED_ATTEMPTS[f"acct:{account_key}"].append(now)
 
 
-def _clear_auth_failures(client_ip: str) -> None:
+def _clear_auth_failures(client_ip: str, account_key: Optional[str] = None) -> None:
     _AUTH_FAILED_ATTEMPTS.pop(client_ip, None)
+    if account_key:
+        _AUTH_FAILED_ATTEMPTS.pop(f"acct:{account_key}", None)
 
 
 class EmergencyLoginRequest(BaseModel):
@@ -120,6 +144,7 @@ class EmergencyLoginRequest(BaseModel):
 class SSOExchangeRequest(BaseModel):
     code: str
     redirect_uri: str
+    code_verifier: Optional[str] = None
 
 
 class ResourceCalendarUpdateRequest(BaseModel):
@@ -154,8 +179,9 @@ def exchange_entra_sso_code(
     db: Session = Depends(get_db),
 ):
     """
-    Exchanges an Entra ID OAuth2 authorization code for an ID/Access token on the backend server
-    using the confidential client secret, then issues a cryptographically signed HS256 session JWT.
+    Exchanges an Entra ID OAuth2 authorization code for an ID token on the backend server
+    using the confidential client secret, validates audience (aud) and tenant (tid) claims,
+    and issues a cryptographically signed HS256 session JWT.
     """
     import httpx
     import jwt
@@ -169,15 +195,20 @@ def exchange_entra_sso_code(
             detail="Microsoft Entra ID credentials are not fully configured on the server.",
         )
 
-    token_url = f"https://login.microsoftonline.com/{settings.AZURE_AD_TENANT_ID.strip()}/oauth2/v2.0/token"
+    expected_tenant_id = settings.AZURE_AD_TENANT_ID.strip()
+    expected_client_id = settings.AZURE_AD_CLIENT_ID.strip()
+
+    token_url = f"https://login.microsoftonline.com/{expected_tenant_id}/oauth2/v2.0/token"
     payload = {
-        "client_id": settings.AZURE_AD_CLIENT_ID.strip(),
+        "client_id": expected_client_id,
         "client_secret": settings.AZURE_AD_CLIENT_SECRET.strip(),
         "grant_type": "authorization_code",
         "code": req.code.strip(),
         "redirect_uri": req.redirect_uri.strip(),
         "scope": "openid profile email User.Read",
     }
+    if req.code_verifier:
+        payload["code_verifier"] = req.code_verifier.strip()
 
     try:
         with httpx.Client(timeout=15.0) as client:
@@ -189,9 +220,10 @@ def exchange_entra_sso_code(
             detail=f"Failed to contact Microsoft Entra ID token endpoint: {str(e)}",
         )
 
-    if resp.status_code != 200 or ("id_token" not in token_data and "access_token" not in token_data):
+    # Strictly require id_token for OpenID Connect identity verification (do not fall back to Graph access_token)
+    if resp.status_code != 200 or "id_token" not in token_data:
         _record_auth_failure(client_ip)
-        err_desc = token_data.get("error_description") or token_data.get("error") or "Token exchange failed"
+        err_desc = token_data.get("error_description") or token_data.get("error") or "Missing id_token or token exchange failed"
         db.add(
             AuditLogDB(
                 entity_type="AUTH",
@@ -207,10 +239,28 @@ def exchange_entra_sso_code(
             detail=f"Entra ID token exchange failed: {err_desc}",
         )
 
-    raw_entra_jwt = token_data.get("id_token") or token_data.get("access_token")
-    # Since raw_entra_jwt was just received directly from Microsoft's TLS token endpoint using our client_secret,
-    # we extract its claims and mint a locally-signed HS256 session JWT so all subsequent API calls verify signature.
+    raw_entra_jwt = token_data["id_token"]
     entra_claims = jwt.decode(raw_entra_jwt, options={"verify_signature": False})
+
+    # Verify audience (aud) and tenant (tid) claims match configured Azure AD application
+    token_aud = entra_claims.get("aud")
+    if token_aud:
+        aud_list = [token_aud] if isinstance(token_aud, str) else list(token_aud)
+        if expected_client_id not in aud_list:
+            _record_auth_failure(client_ip)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Entra ID token audience (aud) claim does not match configured Client ID.",
+            )
+
+    token_tid = entra_claims.get("tid")
+    if token_tid and token_tid.strip().lower() != expected_tenant_id.lower():
+        _record_auth_failure(client_ip)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Entra ID token tenant (tid) claim does not match configured Tenant ID.",
+        )
+
     email = (
         entra_claims.get("preferred_username")
         or entra_claims.get("upn")
@@ -254,7 +304,8 @@ def emergency_admin_login(
 ):
     """Authenticates the emergency / onboarding administrator using credentials stored in .env."""
     client_ip = _get_client_ip(request)
-    _check_auth_rate_limit(client_ip)
+    account_key = "emergency_admin"
+    _check_auth_rate_limit(client_ip, account_key=account_key)
 
     if not settings.EMERGENCY_ADMIN_USERNAME or not settings.EMERGENCY_ADMIN_PASSWORD:
         raise HTTPException(
@@ -266,7 +317,7 @@ def emergency_admin_login(
     pass_match = secrets.compare_digest(req.password, settings.EMERGENCY_ADMIN_PASSWORD)
 
     if not (user_match and pass_match):
-        _record_auth_failure(client_ip)
+        _record_auth_failure(client_ip, account_key=account_key)
         db.add(
             AuditLogDB(
                 entity_type="AUTH",
@@ -282,7 +333,7 @@ def emergency_admin_login(
             detail="Invalid emergency username or password.",
         )
 
-    _clear_auth_failures(client_ip)
+    _clear_auth_failures(client_ip, account_key=account_key)
     uname = settings.EMERGENCY_ADMIN_USERNAME.strip()
     token = create_emergency_token(uname)
     db.add(
@@ -2147,7 +2198,14 @@ def save_entra_config(
     """
     Saves Microsoft Entra ID connection credentials (Tenant ID, Client ID, Client Secret)
     and verifies live connection to Microsoft Graph.
+    In production mode, runtime .env modification via HTTP API is disabled to prevent tenant hijacking.
     """
+    if settings.ENVIRONMENT.strip().lower() == "production":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Runtime .env modification is disabled in production mode for security. Manage AZURE_AD_* credentials directly in the server .env file.",
+        )
+
     old_tid = settings.AZURE_AD_TENANT_ID
     old_cid = settings.AZURE_AD_CLIENT_ID
     old_sec = settings.AZURE_AD_CLIENT_SECRET
@@ -2166,7 +2224,7 @@ def save_entra_config(
             detail=f"Entra ID connection test failed: {test_res.get('message', 'Invalid credentials')}",
         )
 
-    # Persist into .env file safely
+    # Persist into .env file safely (development / local environments only)
     env_path = ".env"
     lines = []
     if os.path.exists(env_path):

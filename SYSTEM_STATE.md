@@ -34,9 +34,10 @@
    - Admin calendar management: creation, weekly shift updates, renaming, hiding/unhiding, and permanent deletion (`DELETE /api/calendars/{calendar_id}`) with resource/project assignment guards and cascade cleanup.
 4. **Template Export & Schema Generator:**
    - Generates compliant MS Project XML templates containing injected resources, cost tables, extended attributes (`Text1-Text30`, `Cost1-Cost10`, `Flag1-Flag20`), and base calendars.
-5. **Authentication Gate & Portfolio Governance:**
-   - Mandatory login gate via Microsoft Entra ID SSO.
-   - Emergency fallback admin user (`emergency_admin`).
+5. **Authentication Gate, Security Hardening & Portfolio Governance:**
+   - Mandatory login gate via Microsoft Entra ID SSO with OAuth2 CSRF `state`, PKCE (`code_verifier` / `S256`), and strict `id_token` audience (`aud`) and tenant (`tid`) verification.
+   - Emergency fallback admin user (`emergency_admin`) protected by constant-time comparison and spoof-resistant IP + per-account brute-force rate limiting.
+   - Runtime `.env` file modification via API (`POST /api/entra/config`) strictly blocked in `production` mode; Docker container runs as unprivileged `mppuser` with `no-new-privileges:true`.
    - Project template creation selects project owner exclusively from active portal users.
    - Admin-exclusive project ownership transfer (`PUT /api/projects/{id}/transfer`) with audit trail.
 6. **Schedule Upload & Baseline/Budget Cost Engine (MS Project Compliant):**

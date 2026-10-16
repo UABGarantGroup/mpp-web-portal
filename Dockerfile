@@ -28,11 +28,17 @@ COPY backend/ ./backend/
 COPY alembic/ ./alembic/
 COPY alembic.ini .
 
+# Create non-root user for least-privilege execution (protects host/container during JVM/MPXJ parsing)
+RUN groupadd -r mppuser && useradd -r -g mppuser -d /app -s /sbin/nologin mppuser \
+    && chown -R mppuser:mppuser /app
+
 # Environment defaults
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
 ENV JAVA_HOME=/usr/lib/jvm/default-java
 ENV JVM_PATH=""
+
+USER mppuser
 
 EXPOSE 8000
 

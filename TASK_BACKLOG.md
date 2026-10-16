@@ -4,6 +4,7 @@
 *(Leave empty or put currently assigned task here)*
 
 ## Planned (Backlog)
+- [ ] [SEC-3] Tighten project ownership authorization (`_is_project_owner`), Graph OData/UUID input validation, and DOM-XSS / CSP hardening in `index.html`.
 - [ ] [TEST] Expand automated pytest coverage for MSPDI XML schema validation.
 - [ ] [FEAT] Implement audit logging for resource rate modifications.
 - [ ] [UI] Improve user experience for calendar exception imports.
@@ -25,4 +26,7 @@
 - [x] Fix character encoding mojibake for Baltic and international text: enforce native NVARCHAR Unicode columns on Microsoft SQL Server and add defensive Baltic mojibake restoration utility.
 - [x] Add option to remove calendar from calendar list for Administrator role users (`DELETE /api/calendars/{calendar_id}`) with cascade cleanup, assignment guards, and audit trail.
 - [x] Add function to import new project from MPP file (`POST /api/projects/import-mpp`), requiring Project Manager assignment from registered portal users and naming project from top task description.
-- [x] Fix MPP binary file import: repair inverted JVM initialization logic in MPXJ parser and implement multi-stage JVM runtime auto-discovery (settings, JAVA_HOME, common Windows JDK/JBR paths, JPype default) with Windows signal suppression.
+- [x] Fix MPP binary file import: repair inverted JVM initialization logic in MPXJ parser and implement multi-stage JVM runtime auto-discovery (settings, JAVA_HOME, common Windows JDK/JBR paths, JPype default) with Windows signal suppression.
+- [x] Comprehensive cybersecurity architecture & codebase audit with prioritized hardening recommendations.
+- [x] [SEC-1] Harden Entra SSO code exchange (`id_token` audience/tenant verification, OAuth2 CSRF `state` & PKCE `code_verifier` support) and spoof-resistant IP/account rate limiting.
+- [x] [SEC-2] Run Docker container as non-root `mppuser` (`Dockerfile`), enforce `no-new-privileges:true` in Compose, and disable runtime `.env` overwrite in production (`POST /api/entra/config`).

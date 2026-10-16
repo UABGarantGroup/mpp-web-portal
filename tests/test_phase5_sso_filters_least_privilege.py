@@ -243,3 +243,160 @@ def test_default_open_project_filter_and_toggle_status(client, db_session):
     resp_after = client.get("/api/portfolio", headers=admin_headers)
     all_after_erps = [p["erp_number"] for g in resp_after.json()["groups"] for p in g["projects"]]
     assert "26-STATUS-OPEN" not in all_after_erps
+
+
+def test_sso_exchange_enforces_id_token_and_aud_tid_claims(client, monkeypatch):
+    """
+    Verifies HIGH-1:
+    - Rejects OAuth2 responses missing id_token (does not fall back to access_token).
+    - Rejects id_token with mismatched aud (Client ID) or tid (Tenant ID).
+    - Accepts valid id_token with matching aud and tid and forwards PKCE code_verifier.
+    """
+    import httpx
+    import jwt
+    from unittest.mock import MagicMock
+    from backend.app.api.routes import _AUTH_FAILED_ATTEMPTS
+
+    _AUTH_FAILED_ATTEMPTS.clear()
+    monkeypatch.setattr(settings, "AZURE_AD_TENANT_ID", "tenant-1111")
+    monkeypatch.setattr(settings, "AZURE_AD_CLIENT_ID", "client-2222")
+    monkeypatch.setattr(settings, "AZURE_AD_CLIENT_SECRET", "secret-3333")
+
+    captured_payloads = []
+    orig_post = httpx.Client.post
+
+    def make_mock_post(token_response_dict):
+        def _mock_post(self, url, *args, **kwargs):
+            if "login.microsoftonline.com" in str(url):
+                captured_payloads.append(kwargs.get("data"))
+                resp = MagicMock()
+                resp.status_code = 200
+                resp.json.return_value = token_response_dict
+                return resp
+            return orig_post(self, url, *args, **kwargs)
+        return _mock_post
+
+    # 1. Missing id_token (only access_token returned) -> must reject 401
+    only_access_jwt = jwt.encode(
+        {"preferred_username": "pm@garantgroup.eu", "aud": "https://graph.microsoft.com"},
+        "dummy",
+        algorithm="HS256",
+    )
+    monkeypatch.setattr(httpx.Client, "post", make_mock_post({"access_token": only_access_jwt}))
+    r1 = client.post("/api/auth/sso/exchange", json={"code": "c1", "redirect_uri": "http://localhost:8000"})
+    assert r1.status_code == 401
+
+    # 2. Wrong audience (aud mismatch) -> must reject 401
+    wrong_aud_jwt = jwt.encode(
+        {"preferred_username": "pm@garantgroup.eu", "aud": "wrong-client-id", "tid": "tenant-1111"},
+        "dummy",
+        algorithm="HS256",
+    )
+    monkeypatch.setattr(httpx.Client, "post", make_mock_post({"id_token": wrong_aud_jwt}))
+    r2 = client.post("/api/auth/sso/exchange", json={"code": "c2", "redirect_uri": "http://localhost:8000"})
+    assert r2.status_code == 401
+    assert "aud" in r2.json()["detail"]
+
+    # 3. Wrong tenant (tid mismatch) -> must reject 401
+    wrong_tid_jwt = jwt.encode(
+        {"preferred_username": "pm@garantgroup.eu", "aud": "client-2222", "tid": "attacker-tenant-9999"},
+        "dummy",
+        algorithm="HS256",
+    )
+    monkeypatch.setattr(httpx.Client, "post", make_mock_post({"id_token": wrong_tid_jwt}))
+    r3 = client.post("/api/auth/sso/exchange", json={"code": "c3", "redirect_uri": "http://localhost:8000"})
+    assert r3.status_code == 401
+    assert "tid" in r3.json()["detail"]
+
+    # 4. Matching aud and tid + PKCE code_verifier -> 200 OK
+    valid_id_jwt = jwt.encode(
+        {"preferred_username": "domas.krupavicius@garantgroup.eu", "name": "Domas Krupavičius", "aud": "client-2222", "tid": "tenant-1111"},
+        "dummy",
+        algorithm="HS256",
+    )
+    monkeypatch.setattr(httpx.Client, "post", make_mock_post({"id_token": valid_id_jwt}))
+    r4 = client.post(
+        "/api/auth/sso/exchange",
+        json={"code": "c4", "redirect_uri": "http://localhost:8000", "code_verifier": "pkce_verifier_secret_123"},
+    )
+    assert r4.status_code == 200
+    assert "access_token" in r4.json()
+    assert captured_payloads[-1].get("code_verifier") == "pkce_verifier_secret_123"
+    _AUTH_FAILED_ATTEMPTS.clear()
+
+
+def test_rate_limiter_resists_x_forwarded_for_spoofing(client, monkeypatch):
+    """
+    Verifies HIGH-2:
+    Sending forged X-Forwarded-For headers with rotating random IPs cannot bypass
+    brute-force rate limiting on /api/auth/emergency-login.
+    """
+    from backend.app.api.routes import _AUTH_FAILED_ATTEMPTS, _AUTH_MAX_FAILED_ATTEMPTS
+
+    _AUTH_FAILED_ATTEMPTS.clear()
+    monkeypatch.setattr(settings, "EMERGENCY_ADMIN_USERNAME", "emergency_admin")
+    monkeypatch.setattr(settings, "EMERGENCY_ADMIN_PASSWORD", "Correct_Horse_Battery_Staple_2026!")
+
+    for i in range(_AUTH_MAX_FAILED_ATTEMPTS):
+        resp = client.post(
+            "/api/auth/emergency-login",
+            json={"username": "emergency_admin", "password": f"wrong_pass_{i}"},
+            headers={"X-Forwarded-For": f"203.0.113.{i + 1}"},
+        )
+        assert resp.status_code == 401
+
+    # 9th attempt with a brand-new forged X-Forwarded-For IP must be blocked with 429 Too Many Requests
+    blocked_resp = client.post(
+        "/api/auth/emergency-login",
+        json={"username": "emergency_admin", "password": "another_wrong_pass"},
+        headers={"X-Forwarded-For": "198.51.100.250"},
+    )
+    assert blocked_resp.status_code == 429
+    _AUTH_FAILED_ATTEMPTS.clear()
+
+
+def test_entra_config_blocks_runtime_env_overwrite_in_production(client, monkeypatch):
+    """
+    Verifies HIGH-4:
+    POST /api/entra/config must reject runtime .env modification with 403 when ENVIRONMENT == 'production'.
+    """
+    import jwt
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setattr(settings, "AUTH_ENABLED", True)
+
+    admin_token = jwt.encode(
+        {"sub": "admin@enterprise.com", "email": "admin@enterprise.com", "roles": ["Admin"], "auth_type": "SSO_SESSION"},
+        settings.SECRET_KEY,
+        algorithm="HS256",
+    )
+    resp = client.post(
+        "/api/entra/config",
+        json={
+            "tenant_id": "attacker-tenant-id",
+            "client_id": "attacker-client-id",
+            "client_secret": "attacker-secret",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 403
+    assert "disabled in production" in resp.json()["detail"]
+
+
+def test_dockerfile_non_root_user_and_compose_security_opt():
+    """
+    Verifies HIGH-3:
+    Dockerfile drops privileges to non-root USER mppuser and Docker Compose files enforce no-new-privileges:true.
+    """
+    import os
+
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    with open(os.path.join(root_dir, "Dockerfile"), "r", encoding="utf-8") as f:
+        dockerfile_content = f.read()
+    assert "USER mppuser" in dockerfile_content
+
+    for compose_file in ["docker-compose.yml", "docker-compose.mssql.yml", "docker-compose.external-db.yml"]:
+        with open(os.path.join(root_dir, compose_file), "r", encoding="utf-8") as f:
+            compose_content = f.read()
+        assert "no-new-privileges:true" in compose_content
+

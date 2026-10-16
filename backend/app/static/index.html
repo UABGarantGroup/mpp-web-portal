@@ -1242,15 +1242,31 @@
       }
 
       if (authCode) {
+        const returnedState = urlParams.get("state");
+        const expectedState = sessionStorage.getItem("mpp_oauth_state");
+        const storedVerifier = sessionStorage.getItem("mpp_oauth_verifier");
+        sessionStorage.removeItem("mpp_oauth_state");
+        sessionStorage.removeItem("mpp_oauth_verifier");
         window.history.replaceState({}, document.title, window.location.pathname);
+
+        if (expectedState && returnedState !== expectedState) {
+          renderSignInState(false);
+          showLoginGateError("OAuth2 state mismatch detected (CSRF protection). Please try signing in again.");
+          return;
+        }
+
         try {
+          const exchangePayload = {
+            code: authCode,
+            redirect_uri: window.location.origin
+          };
+          if (storedVerifier) {
+            exchangePayload.code_verifier = storedVerifier;
+          }
           const exResp = await fetch("/api/auth/sso/exchange", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              code: authCode,
-              redirect_uri: window.location.origin
-            })
+            body: JSON.stringify(exchangePayload)
           });
           const exData = await exResp.json();
           if (exResp.ok && exData.access_token) {
@@ -1278,12 +1294,40 @@
       }
     }
 
+    function _generateRandomBase64Url(byteLength) {
+      const arr = new Uint8Array(byteLength);
+      window.crypto.getRandomValues(arr);
+      let str = "";
+      for (let i = 0; i < arr.length; i++) {
+        str += String.fromCharCode(arr[i]);
+      }
+      return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    }
+
     async function signInEntraSSO() {
       showLoginGateError(null);
       if (!entraAuthConfig || !entraAuthConfig.client_id || !entraAuthConfig.tenant_id) {
         showLoginGateError("Microsoft Entra ID SSO is not configured (missing Tenant ID or Client ID).");
         return;
       }
+
+      const state = _generateRandomBase64Url(24);
+      sessionStorage.setItem("mpp_oauth_state", state);
+
+      let pkceParams = "";
+      if (window.crypto && window.crypto.subtle) {
+        const verifier = _generateRandomBase64Url(32);
+        sessionStorage.setItem("mpp_oauth_verifier", verifier);
+        const digest = await window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+        const hashBytes = new Uint8Array(digest);
+        let binStr = "";
+        for (let i = 0; i < hashBytes.length; i++) {
+          binStr += String.fromCharCode(hashBytes[i]);
+        }
+        const challenge = btoa(binStr).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+        pkceParams = `&code_challenge=${encodeURIComponent(challenge)}&code_challenge_method=S256`;
+      }
+
       const authorizeUrl =
         `https://login.microsoftonline.com/${encodeURIComponent(entraAuthConfig.tenant_id)}/oauth2/v2.0/authorize` +
         `?client_id=${encodeURIComponent(entraAuthConfig.client_id)}` +
@@ -1291,6 +1335,8 @@
         `&redirect_uri=${encodeURIComponent(window.location.origin)}` +
         `&response_mode=query` +
         `&scope=${encodeURIComponent("openid profile email User.Read")}` +
+        `&state=${encodeURIComponent(state)}` +
+        pkceParams +
         `&prompt=select_account`;
 
       window.location.href = authorizeUrl;

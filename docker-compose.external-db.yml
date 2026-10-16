@@ -21,3 +21,5 @@ services:
       - .env
     environment:
       - ENVIRONMENT=production
+    security_opt:
+      - no-new-privileges:true

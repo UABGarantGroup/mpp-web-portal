@@ -13,6 +13,8 @@ services:
     environment:
       - DATABASE_URL=mssql+pymssql://sa:${MSSQL_SA_PASSWORD:-YourStrong@Passw0rd2026}@db:1433/mpp_hub
       - ENVIRONMENT=production
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       db:
         condition: service_healthy
