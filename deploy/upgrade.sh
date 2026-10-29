@@ -40,7 +40,11 @@ fi
 # Detect current branch if no branch argument passed
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 if [ -z "${TARGET_BRANCH}" ]; then
-    TARGET_BRANCH="${CURRENT_BRANCH}"
+    if [ "${CURRENT_BRANCH}" = "master" ] || [ "${CURRENT_BRANCH}" = "HEAD" ]; then
+        TARGET_BRANCH="main"
+    else
+        TARGET_BRANCH="${CURRENT_BRANCH}"
+    fi
 fi
 echo "[2/6] Target branch: ${TARGET_BRANCH} (Current branch: ${CURRENT_BRANCH})"
 
@@ -60,7 +64,7 @@ git fetch origin
 
 # Switch branch if requested branch differs
 if [ "${CURRENT_BRANCH}" != "${TARGET_BRANCH}" ]; then
-    git checkout "${TARGET_BRANCH}"
+    git checkout -B "${TARGET_BRANCH}" "origin/${TARGET_BRANCH}"
 fi
 
 # Pull latest code
