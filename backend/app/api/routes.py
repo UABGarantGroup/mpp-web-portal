@@ -1875,28 +1875,55 @@ async def upload_project_schedule(
         raise HTTPException(status_code=400, detail=f"Failed to parse project file: {str(e)}")
 
     # Safety check: Verify the file belongs to this project to avoid uploading to the wrong row
-    file_erp = parsed.get("erp_number")
-    file_title = parsed.get("title")
-    target_erp = proj.erp_number.strip().lower()
+    file_erp = (parsed.get("erp_number") or "").strip()
+    file_title = (parsed.get("title") or "").strip()
+    file_task_name = (parsed.get("task_name") or "").strip()
+    target_erp = (proj.erp_number or "").strip().lower()
+    target_name = (proj.name or "").strip().lower()
+    clean_fn = os.path.basename(file.filename or "").strip().lower()
+    clean_stem = os.path.splitext(clean_fn)[0].strip()
+
+    def _matches_project_name(candidate: str) -> bool:
+        c = (candidate or "").strip().lower()
+        if not c or not target_name or len(target_name) < 3 or len(c) < 3:
+            return False
+        return c == target_name or target_name in c or c in target_name
+
+    name_matched = (
+        _matches_project_name(file_title)
+        or _matches_project_name(file_task_name)
+        or _matches_project_name(clean_stem)
+    )
 
     if file_erp:
-        if file_erp.strip().lower() != target_erp:
+        clean_file_erp = file_erp.lower()
+        erp_matched = (
+            clean_file_erp == target_erp
+            or (target_erp.startswith("prj-") and (clean_file_erp in target_name or name_matched))
+        )
+        if not erp_matched:
             raise HTTPException(
                 status_code=400,
                 detail=f"Project mismatch! File contains ERP '{file_erp}', but target row is '{proj.erp_number}' ({proj.name}). Upload rejected to prevent overwriting wrong project."
             )
-    elif file_title and target_erp:
-        # Check if ERP number appears anywhere in the file title or project properties
+    elif file_title and target_erp and not target_erp.startswith("prj-"):
+        # Check if ERP number or project name matches file title, top task name, or filename
         clean_title = file_title.lower()
-        if target_erp not in clean_title and target_erp.replace("-", "") not in clean_title.replace("-", ""):
-            # Also check if filename has the ERP number
-            clean_fn = (file.filename or "").lower()
-            if target_erp not in clean_fn and target_erp.replace("-", "") not in clean_fn.replace("-", ""):
-                # If neither the file properties nor the filename match the project ERP, warn and block
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Project verification error! Neither the file title ('{file_title}') nor filename ('{file.filename}') matches target ERP number '{proj.erp_number}'. Please check that you selected the schedule for this project."
-                )
+        clean_task = file_task_name.lower()
+        erp_no_dash = target_erp.replace("-", "")
+        erp_in_file = (
+            target_erp in clean_title
+            or erp_no_dash in clean_title.replace("-", "")
+            or target_erp in clean_task
+            or erp_no_dash in clean_task.replace("-", "")
+            or target_erp in clean_fn
+            or erp_no_dash in clean_fn.replace("-", "")
+        )
+        if not erp_in_file and not name_matched:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Project verification error! Neither the file title ('{file_title}') nor filename ('{file.filename}') matches target ERP number '{proj.erp_number}'. Please check that you selected the schedule for this project."
+            )
 
     # Microsoft Project logic alignment:
     # If the uploaded file defines a Budget Resource assignment (budget_cost > 0), align both

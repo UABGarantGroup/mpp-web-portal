@@ -153,3 +153,39 @@ def test_mpxj_jvm_discovery_and_initialization():
         init_ok = _init_mpxj()
         assert init_ok is True
 
+
+def test_update_existing_imported_project_with_auto_erp_succeeds(client, db_session):
+    """
+    Regression test for updating an existing project that was imported from MPP
+    with an auto-generated ERP code (e.g. 'PRJ-2026-6F5AF1') and top task title
+    ('26-0608 STI MILLENIA MAN B&W 6G50ME cylinder heads recon').
+    """
+    pm = db_session.query(PortalUserDB).filter(PortalUserDB.is_active == True).first()
+    assert pm is not None
+
+    task_title = "26-0608 STI MILLENIA MAN B&W 6G50ME cylinder heads recon"
+    xml_bytes = _build_test_mspdi_xml(top_task_name=task_title, erp=None, cost=12000.0)
+
+    # 1. Import project without explicit ERP -> generates PRJ-YYYY-XXXXXX
+    import_resp = client.post(
+        "/api/projects/import-mpp",
+        data={"owner": pm.display_name, "calendar_id": "1"},
+        files={"file": (f"{task_title}.xml", xml_bytes, "application/xml")},
+    )
+    assert import_resp.status_code == 200, import_resp.text
+    imported = import_resp.json()
+    assert imported["erp_number"].startswith("PRJ-")
+    assert imported["name"] == task_title
+    proj_id = imported["id"]
+
+    # 2. Upload updated schedule file for this existing project
+    updated_xml = _build_test_mspdi_xml(top_task_name=task_title, erp=None, cost=24500.0)
+    up_resp = client.post(
+        f"/api/projects/{proj_id}/upload-schedule",
+        files={"file": (f"{task_title}.xml", updated_xml, "application/xml")},
+    )
+    assert up_resp.status_code == 200, up_resp.text
+    up_data = up_resp.json()
+    assert up_data["metrics"]["cost"] == 24500.0
+
+

@@ -29,4 +29,5 @@
 - [x] Fix MPP binary file import: repair inverted JVM initialization logic in MPXJ parser and implement multi-stage JVM runtime auto-discovery (settings, JAVA_HOME, common Windows JDK/JBR paths, JPype default) with Windows signal suppression.
 - [x] Comprehensive cybersecurity architecture & codebase audit with prioritized hardening recommendations.
 - [x] [SEC-1] Harden Entra SSO code exchange (`id_token` audience/tenant verification, OAuth2 CSRF `state` & PKCE `code_verifier` support) and spoof-resistant IP/account rate limiting.
-- [x] [SEC-2] Run Docker container as non-root `mppuser` (`Dockerfile`), enforce `no-new-privileges:true` in Compose, and disable runtime `.env` overwrite in production (`POST /api/entra/config`).
+- [x] [SEC-2] Run Docker container as non-root `mppuser` (`Dockerfile`), enforce `no-new-privileges:true` in Compose, and disable runtime `.env` overwrite in production (`POST /api/entra/config`).
+- [x] Fix schedule upload verification (`POST /api/projects/{project_id}/upload-schedule`) to allow updating existing MPP-imported projects with auto-generated `PRJ-...` ERP numbers when the schedule matches the project name (`title`, `task_name`, or filename stem).
