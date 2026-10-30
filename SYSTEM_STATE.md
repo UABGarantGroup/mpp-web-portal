@@ -35,6 +35,7 @@
 4. **Template Export & Schema Generator:**
    - Generates compliant MS Project XML templates containing injected resources, cost tables, extended attributes (`Text1-Text30`, `Cost1-Cost10`, `Flag1-Flag20`), and base calendars.
    - Assigns contiguous 1-based `<ID>` row numbers across exported resources (while preserving stable database `<UID>` and `<GUID>` identities) with top-level `<MaxUnits>`, `<StandardRate>`, `<OvertimeRate>`, and `<AccrueAt>` fields so all resources render properly in MS Project Desktop's **Resource Sheet** view as well as the Task Resource Names dropdown.
+   - Reliable Browser XML Download Delivery: returns UTF-8 byte responses with explicit `Content-Length`, `Cache-Control: no-store`, and `Access-Control-Expose-Headers: Content-Disposition`, paired with a delayed `URL.revokeObjectURL` (60s) and non-blocking `alert()` scheduling in `index.html` so Chromium (Chrome/Edge) downloads never fail with `Couldn't download - Network issue` or `Couldn't download - Try again later`.
 5. **Authentication Gate, Security Hardening & Portfolio Governance:**
    - Mandatory login gate via Microsoft Entra ID SSO with OAuth2 CSRF `state`, PKCE (`code_verifier` / `S256`), and strict `id_token` audience (`aud`) and tenant (`tid`) verification.
    - Emergency fallback admin user (`emergency_admin`) protected by constant-time comparison and spoof-resistant IP + per-account brute-force rate limiting.

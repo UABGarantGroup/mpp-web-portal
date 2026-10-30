@@ -1182,16 +1182,23 @@ def export_project_xml(
         calendars=calendars_dict,
         resources=resources_dict,
     )
+    xml_bytes = xml_content.encode("utf-8")
 
-    clean_title = "".join(c for c in template_req.project_title if c.isalnum() or c in ("-", "_", " ")).strip()
+    raw_title = (template_req.project_title or template_req.project_erp_number or "project").strip()
+    clean_title = "".join(c for c in raw_title if c.isalnum() or c in ("-", "_", " ")).strip()
+    if not clean_title:
+        clean_title = (template_req.project_erp_number or "project").strip()
     ascii_filename = f"{clean_title.replace(' ', '_').lower()}_template.xml"
-    quoted_filename = urllib.parse.quote(f"{template_req.project_title}_template.xml")
+    quoted_filename = urllib.parse.quote(f"{raw_title}_template.xml")
 
     return Response(
-        content=xml_content,
+        content=xml_bytes,
         media_type="application/xml; charset=utf-8",
         headers={
-            "Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{quoted_filename}"
+            "Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{quoted_filename}",
+            "Content-Length": str(len(xml_bytes)),
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Access-Control-Expose-Headers": "Content-Disposition",
         },
     )
 

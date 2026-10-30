@@ -269,3 +269,33 @@ def test_transfer_project_owner(client):
     assert get_resp.status_code == 200
     assert get_resp.json()["owner"] == target_owner
 
+
+def test_export_project_template_download_headers_and_delayed_blob_revoke(client):
+    projs = client.get("/api/projects").json()
+    assert len(projs) > 0
+    proj_id = projs[0]["id"]
+
+    resp = client.get(f"/api/projects/{proj_id}/template/xml")
+    assert resp.status_code == 200
+    assert "application/xml" in resp.headers.get("content-type", "")
+    assert "attachment;" in resp.headers.get("content-disposition", "")
+    assert "_template.xml" in resp.headers.get("content-disposition", "")
+    assert int(resp.headers.get("content-length", "0")) == len(resp.content)
+    assert "no-store" in resp.headers.get("cache-control", "")
+
+    import os
+    index_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "backend",
+        "app",
+        "static",
+        "index.html",
+    )
+    with open(index_path, "r", encoding="utf-8") as f:
+        html_content = f.read()
+
+    assert "function _triggerBlobDownload(arrayBuffer, filename)" in html_content
+    assert "await downloadTemplateForProject(created.id);" in html_content
+    assert "}, 60000);" in html_content
+
+
