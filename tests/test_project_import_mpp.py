@@ -301,5 +301,97 @@ def test_upload_schedule_with_stale_template_erp_uses_technical_field_and_succee
     assert up_resp_2.json()["metrics"]["cost"] == 39900.0
 
 
+def test_leaf_task_progress_rollup_and_zero_work_budget_assignment(client, db_session):
+    """
+    Verifies that:
+    1) When Task 0 has 0% complete / 0% work complete (e.g. Manual calculation mode in MS Project),
+       the parser rolls up % Complete, % Work Complete, Cost, Actual Cost, Start, and Finish from leaf tasks.
+    2) Exported XML template sets <Work>PT0H0M0S</Work> and <Units>0</Units> on the Task 0 Project Budget
+       assignment (ResourceUID=9999) so MS Project Desktop never assigns phantom work to the Cost resource.
+    """
+    proj = db_session.query(ProjectDB).filter(ProjectDB.erp_number == "25-0980").first()
+    assert proj is not None
+
+    # 1. Verify exported XML has zero work and zero units for Project Budget (ResourceUID=9999)
+    exp_resp = client.get(f"/api/projects/{proj.id}/template/xml")
+    assert exp_resp.status_code == 200
+    root = ET.fromstring(exp_resp.content.decode("utf-8"))
+    ns = {"ms": "http://schemas.microsoft.com/project"}
+    budget_asgn = None
+    for asgn in root.findall(".//ms:Assignment", ns):
+        r_uid = asgn.find("ms:ResourceUID", ns)
+        if r_uid is not None and r_uid.text == "9999":
+            budget_asgn = asgn
+            break
+    assert budget_asgn is not None
+    assert budget_asgn.find("ms:Work", ns).text == "PT0H0M0S"
+    assert budget_asgn.find("ms:Units", ns).text == "0"
+
+    # 2. Upload XML where Task 0 has 0% complete / 0% work complete, while leaf tasks have progress
+    unrecalculated_xml = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Project xmlns="http://schemas.microsoft.com/project">
+    <Title>25-0980 Pikasoima IGG katilu apsauga</Title>
+    <Tasks>
+        <Task>
+            <UID>0</UID>
+            <ID>0</ID>
+            <Name>25-0980 Pikasoima IGG katilu apsauga</Name>
+            <Summary>1</Summary>
+            <PercentComplete>0</PercentComplete>
+            <PercentWorkComplete>0</PercentWorkComplete>
+            <Start>2026-10-30T08:00:00</Start>
+            <Finish>2026-11-03T18:00:00</Finish>
+            <Cost>0</Cost>
+            <ActualCost>0</ActualCost>
+            <BudgetCost>1000.00</BudgetCost>
+        </Task>
+        <Task>
+            <UID>1</UID>
+            <ID>1</ID>
+            <Name>darbas 0</Name>
+            <Summary>0</Summary>
+            <Duration>PT20H0M0S</Duration>
+            <ActualDuration>PT2H24M0S</ActualDuration>
+            <PercentComplete>12</PercentComplete>
+            <Work>PT20H0M0S</Work>
+            <ActualWork>PT2H24M0S</ActualWork>
+            <PercentWorkComplete>12</PercentWorkComplete>
+            <Start>2026-10-30T08:00:00</Start>
+            <Finish>2026-11-03T18:00:00</Finish>
+            <Cost>760.00</Cost>
+            <ActualCost>91.20</ActualCost>
+        </Task>
+        <Task>
+            <UID>2</UID>
+            <ID>2</ID>
+            <Name>darbas 2</Name>
+            <Summary>0</Summary>
+            <Duration>PT50H0M0S</Duration>
+            <ActualDuration>PT0H0M0S</ActualDuration>
+            <PercentComplete>0</PercentComplete>
+            <Work>PT50H0M0S</Work>
+            <ActualWork>PT0H0M0S</ActualWork>
+            <PercentWorkComplete>0</PercentWorkComplete>
+            <Start>2026-11-04T08:00:00</Start>
+            <Finish>2026-11-10T18:00:00</Finish>
+            <Cost>1900.00</Cost>
+            <ActualCost>0.00</ActualCost>
+        </Task>
+    </Tasks>
+</Project>"""
+    up_resp = client.post(
+        f"/api/projects/{proj.id}/upload-schedule",
+        files={"file": ("25-0980_schedule.xml", unrecalculated_xml, "application/xml")},
+    )
+    assert up_resp.status_code == 200, up_resp.text
+    metrics = up_resp.json()["metrics"]
+    assert metrics["percent_complete"] == 3.4
+    assert metrics["percent_work_complete"] == 3.4
+    assert metrics["cost"] == 2660.0
+    assert metrics["actual_cost"] == 91.2
+    assert metrics["finish_date"] == "2026-11-10"
+
+
+
 
 

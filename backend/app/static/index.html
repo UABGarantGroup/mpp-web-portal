@@ -884,9 +884,12 @@
         <h3 id="upload-schedule-modal-title"><i class="fa-solid fa-file-arrow-up" style="color:var(--primary);"></i> Upload Project Schedule</h3>
         <button style="border:none;background:none;font-size:1.2rem;cursor:pointer;" onclick="closeUploadScheduleModal()">&times;</button>
       </div>
-      <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
+      <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:0.75rem;">
         Upload your working MS Project file (<strong>.mpp</strong> or <strong>.xml</strong>). The portal reads summary task metrics, costs, progress, and updates the portfolio automatically.
       </p>
+      <div style="font-size:0.8rem; background:#fff4ce; border:1px solid #f2d775; color:#5c4300; padding:0.45rem 0.65rem; border-radius:4px; margin-bottom:1rem;">
+        <i class="fa-solid fa-floppy-disk"></i> <strong>Tip:</strong> Press <strong>Save (Ctrl+S)</strong> in MS Project Desktop before choosing the file so your latest progress (% Complete, % Work) and tasks are written to disk.
+      </div>
       <input type="hidden" id="upload-schedule-project-id">
       <div class="form-group" style="margin-bottom:1.25rem;">
         <label>Select MS Project File (.mpp or .xml) *</label>
@@ -1514,7 +1517,10 @@
       try {
         const filterElem = document.getElementById("portfolio-status-filter");
         const statusVal = filterElem ? filterElem.value : "OPEN";
-        const resp = await fetch(`/api/portfolio?status=${encodeURIComponent(statusVal)}`, { headers: getAuthHeaders() });
+        const resp = await fetch(`/api/portfolio?status=${encodeURIComponent(statusVal)}`, {
+          headers: getAuthHeaders(),
+          cache: "no-store"
+        });
         if (resp.status === 401) {
           renderSignInState(false);
           return;
@@ -2318,7 +2324,7 @@
         statusEl.style.background = "#dff6dd";
         statusEl.style.border = "1px solid #aadea7";
         statusEl.style.color = "#107c10";
-        statusEl.innerHTML = `<i class="fa-solid fa-circle-check"></i> <strong>Updated!</strong> % Complete: ${res.metrics.percent_complete}%, Work: ${res.metrics.percent_work_complete}%, Actual Cost: €${formatNumber(res.metrics.actual_cost)}`;
+        statusEl.innerHTML = `<i class="fa-solid fa-circle-check"></i> <strong>Updated!</strong> % Complete: ${res.metrics.percent_complete}%, Work: ${res.metrics.percent_work_complete}%, Cost: €${formatNumber(res.metrics.cost)}, Actual Cost: €${formatNumber(res.metrics.actual_cost)}`;
 
         setTimeout(() => {
           closeUploadScheduleModal();

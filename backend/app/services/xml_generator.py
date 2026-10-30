@@ -460,7 +460,6 @@ def build_ms_project_xml(
         ET.SubElement(b_res, "Type").text = "2"  # Cost resource
         ET.SubElement(b_res, "IsNull").text = "0"
         ET.SubElement(b_res, "AccrueAt").text = "3"
-        ET.SubElement(b_res, "CalendarUID").text = str(selected_cal.id)
         ET.SubElement(b_res, "IsCostResource").text = "1"
         ET.SubElement(b_res, "IsBudget").text = "1"
         ET.SubElement(b_res, "IsGeneric").text = "0"
@@ -473,6 +472,10 @@ def build_ms_project_xml(
         ET.SubElement(budget_assignment, "UID").text = "1"
         ET.SubElement(budget_assignment, "TaskUID").text = "0"
         ET.SubElement(budget_assignment, "ResourceUID").text = str(budget_resource_uid)
+        ET.SubElement(budget_assignment, "Units").text = "0"
+        ET.SubElement(budget_assignment, "Work").text = "PT0H0M0S"
+        ET.SubElement(budget_assignment, "ActualWork").text = "PT0H0M0S"
+        ET.SubElement(budget_assignment, "RemainingWork").text = "PT0H0M0S"
         ET.SubElement(budget_assignment, "BudgetCost").text = f"{template_req.budget_cost:.2f}"
 
     # Prettify and serialize XML output with explicit UTF-8 declaration

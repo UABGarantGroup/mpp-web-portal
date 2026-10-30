@@ -224,7 +224,7 @@ class ProjectDB(Base):
     last_updated_at = Column(DateTime, nullable=True)     # Timestamp of last update / schedule upload
 
     stage_statuses = relationship("ProjectStageStatusDB", back_populates="project", cascade="all, delete-orphan")
-    snapshots = relationship("ProjectSnapshotDB", back_populates="project", cascade="all, delete-orphan", order_by="desc(ProjectSnapshotDB.recorded_at)")
+    snapshots = relationship("ProjectSnapshotDB", back_populates="project", cascade="all, delete-orphan", order_by="desc(ProjectSnapshotDB.recorded_at), desc(ProjectSnapshotDB.id)")
     team_members = relationship("ProjectTeamResourceDB", back_populates="project", cascade="all, delete-orphan")
 
 

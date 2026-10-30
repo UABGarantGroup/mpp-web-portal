@@ -227,6 +227,18 @@ def parse_project_xml(file_bytes: bytes) -> Dict[str, Any]:
         except (ValueError, TypeError):
             return default
 
+    def parse_iso_hours(val, default=0.0):
+        if not val or not isinstance(val, str):
+            return default
+        import re
+        m = re.match(r"^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$", val.strip())
+        if not m:
+            return default
+        h = float(m.group(1) or 0.0)
+        mins = float(m.group(2) or 0.0)
+        secs = float(m.group(3) or 0.0)
+        return h + (mins / 60.0) + (secs / 3600.0)
+
     def parse_date(val):
         if not val:
             return None
@@ -321,12 +333,21 @@ def parse_project_xml(file_bytes: bytes) -> Dict[str, Any]:
                 baseline_cost = b_cost
                 break
 
-    # If Task 0 baseline_cost is 0.0, roll up from leaf tasks (MS Project calculation logic)
-    if baseline_cost == 0.0 and tasks:
+    # If Task 0 summary metrics are 0.0, roll up from leaf tasks (MS Project calculation logic)
+    if tasks:
         leaf_baseline_sum = 0.0
+        leaf_cost_sum = 0.0
+        leaf_actual_cost_sum = 0.0
+        leaf_dur_sum = 0.0
+        leaf_act_dur_sum = 0.0
+        leaf_work_sum = 0.0
+        leaf_act_work_sum = 0.0
+        leaf_starts = []
+        leaf_finishes = []
         for t in tasks:
             t_uid = find_text(t, f"{prefix}UID")
-            if t_uid == "0":
+            t_id = find_text(t, f"{prefix}ID")
+            if t_uid == "0" or t_id == "0":
                 continue
             is_summary = find_text(t, f"{prefix}Summary") == "1"
             if not is_summary:
@@ -339,10 +360,53 @@ def parse_project_xml(file_bytes: bytes) -> Dict[str, Any]:
                             t_bc = bc
                             break
                 leaf_baseline_sum += t_bc
-        if leaf_baseline_sum > 0.0:
-            baseline_cost = leaf_baseline_sum
-        elif total_nonbudget_asgn_baseline > 0.0:
-            baseline_cost = total_nonbudget_asgn_baseline
+                leaf_cost_sum += parse_float(find_text(t, f"{prefix}Cost"))
+                leaf_actual_cost_sum += parse_float(find_text(t, f"{prefix}ActualCost"))
+
+                t_dur = parse_iso_hours(find_text(t, f"{prefix}Duration"))
+                t_act_dur = parse_iso_hours(find_text(t, f"{prefix}ActualDuration"))
+                t_pct = parse_float(find_text(t, f"{prefix}PercentComplete"))
+                if t_dur == 0.0 and t_pct > 0.0:
+                    t_dur = 1.0
+                if t_act_dur == 0.0 and t_dur > 0.0 and t_pct > 0.0:
+                    t_act_dur = t_dur * (t_pct / 100.0)
+                leaf_dur_sum += t_dur
+                leaf_act_dur_sum += t_act_dur
+
+                t_work = parse_iso_hours(find_text(t, f"{prefix}Work"))
+                t_act_work = parse_iso_hours(find_text(t, f"{prefix}ActualWork"))
+                t_wpct = parse_float(find_text(t, f"{prefix}PercentWorkComplete"))
+                if t_work == 0.0 and t_wpct > 0.0:
+                    t_work = 1.0
+                if t_act_work == 0.0 and t_work > 0.0 and t_wpct > 0.0:
+                    t_act_work = t_work * (t_wpct / 100.0)
+                leaf_work_sum += t_work
+                leaf_act_work_sum += t_act_work
+
+                ts = parse_date(find_text(t, f"{prefix}Start"))
+                tf = parse_date(find_text(t, f"{prefix}Finish"))
+                if ts:
+                    leaf_starts.append(ts)
+                if tf:
+                    leaf_finishes.append(tf)
+
+        if baseline_cost == 0.0:
+            if leaf_baseline_sum > 0.0:
+                baseline_cost = leaf_baseline_sum
+            elif total_nonbudget_asgn_baseline > 0.0:
+                baseline_cost = total_nonbudget_asgn_baseline
+        if cost == 0.0 and leaf_cost_sum > 0.0:
+            cost = leaf_cost_sum
+        if actual_cost == 0.0 and leaf_actual_cost_sum > 0.0:
+            actual_cost = leaf_actual_cost_sum
+        if percent_complete == 0.0 and leaf_dur_sum > 0.0 and leaf_act_dur_sum > 0.0:
+            percent_complete = round((leaf_act_dur_sum / leaf_dur_sum) * 100.0, 1)
+        if percent_work_complete == 0.0 and leaf_work_sum > 0.0 and leaf_act_work_sum > 0.0:
+            percent_work_complete = round((leaf_act_work_sum / leaf_work_sum) * 100.0, 1)
+        if not start_date and leaf_starts:
+            start_date = min(leaf_starts)
+        if leaf_finishes and (not finish_date or max(leaf_finishes) > finish_date):
+            finish_date = max(leaf_finishes)
 
     # Budget cost & Baseline budget cost
     budget_cost = parse_float(find_text(task_0, f"{prefix}BudgetCost")) or task_0_budget_cost
@@ -414,11 +478,17 @@ def parse_with_mpxj(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         props = project_file.getProjectProperties()
         title = str(props.getProjectTitle()) if props.getProjectTitle() else None
 
-        # Retrieve tasks
+        # Retrieve tasks and locate Project Summary Task (UID=0 or ID=0)
         tasks = project_file.getTasks()
         task_0 = None
         if tasks.size() > 0:
-            task_0 = tasks.get(0)
+            for idx in range(tasks.size()):
+                cand = tasks.get(idx)
+                if cand.getUniqueID() == 0 or cand.getID() == 0:
+                    task_0 = cand
+                    break
+            if task_0 is None:
+                task_0 = tasks.get(0)
 
         task_0_name = str(task_0.getName()).strip() if (task_0 and task_0.getName()) else None
         task_0_notes = str(task_0.getNotes()).strip() if (task_0 and task_0.getNotes()) else None
@@ -428,6 +498,14 @@ def parse_with_mpxj(file_bytes: bytes, filename: str) -> Dict[str, Any]:
                 return 0.0
             try:
                 return float(str(val))
+            except Exception:
+                return 0.0
+
+        def j_duration_num(dur_obj):
+            if dur_obj is None:
+                return 0.0
+            try:
+                return float(dur_obj.getDuration())
             except Exception:
                 return 0.0
 
@@ -474,17 +552,64 @@ def parse_with_mpxj(file_bytes: bytes, filename: str) -> Dict[str, Any]:
             except Exception as e:
                 logger.debug("Error reading task 0 assignments in MPXJ: %s", e)
 
-        # Roll up baseline_cost from leaf tasks if task_0 has 0.0
-        if baseline_cost == 0.0 and tasks.size() > 1:
+        # Roll up leaf task metrics if Task 0 was not recalculated by MS Project (e.g. Manual calculation mode)
+        if tasks.size() > 1:
             total_leaf_baseline = 0.0
+            total_leaf_cost = 0.0
+            total_leaf_actual_cost = 0.0
+            total_leaf_dur = 0.0
+            total_leaf_act_dur = 0.0
+            total_leaf_work = 0.0
+            total_leaf_act_work = 0.0
+            leaf_starts = []
+            leaf_finishes = []
+
             for idx in range(tasks.size()):
                 t = tasks.get(idx)
                 if t.getUniqueID() == 0 or t.getID() == 0:
                     continue
                 if not bool(t.getSummary()):
                     total_leaf_baseline += j_float(t.getBaselineCost())
-            if total_leaf_baseline > 0.0:
+                    total_leaf_cost += j_float(t.getCost())
+                    total_leaf_actual_cost += j_float(t.getActualCost())
+
+                    t_dur = j_duration_num(t.getDuration())
+                    t_act_dur = j_duration_num(t.getActualDuration())
+                    t_pct = j_float(t.getPercentageComplete())
+                    if t_act_dur == 0.0 and t_dur > 0.0 and t_pct > 0.0:
+                        t_act_dur = t_dur * (t_pct / 100.0)
+                    total_leaf_dur += t_dur
+                    total_leaf_act_dur += t_act_dur
+
+                    t_work = j_duration_num(t.getWork())
+                    t_act_work = j_duration_num(t.getActualWork())
+                    t_wpct = j_float(t.getPercentageWorkComplete())
+                    if t_act_work == 0.0 and t_work > 0.0 and t_wpct > 0.0:
+                        t_act_work = t_work * (t_wpct / 100.0)
+                    total_leaf_work += t_work
+                    total_leaf_act_work += t_act_work
+
+                    ts = j_date(t.getStart())
+                    tf = j_date(t.getFinish())
+                    if ts:
+                        leaf_starts.append(ts)
+                    if tf:
+                        leaf_finishes.append(tf)
+
+            if baseline_cost == 0.0 and total_leaf_baseline > 0.0:
                 baseline_cost = total_leaf_baseline
+            if cost == 0.0 and total_leaf_cost > 0.0:
+                cost = total_leaf_cost
+            if actual_cost == 0.0 and total_leaf_actual_cost > 0.0:
+                actual_cost = total_leaf_actual_cost
+            if percent_complete == 0.0 and total_leaf_dur > 0.0 and total_leaf_act_dur > 0.0:
+                percent_complete = round((total_leaf_act_dur / total_leaf_dur) * 100.0, 1)
+            if percent_work_complete == 0.0 and total_leaf_work > 0.0 and total_leaf_act_work > 0.0:
+                percent_work_complete = round((total_leaf_act_work / total_leaf_work) * 100.0, 1)
+            if not start_date and leaf_starts:
+                start_date = min(leaf_starts)
+            if leaf_finishes and (not finish_date or max(leaf_finishes) > finish_date):
+                finish_date = max(leaf_finishes)
 
         # ERP Number & Technical PortalProjectGUID check from Task 0 and Project Properties
         erp_number = None
