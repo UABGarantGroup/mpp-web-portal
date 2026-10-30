@@ -250,6 +250,16 @@ def test_resource_types_and_generic_flags(sample_data):
     inactive = root.find("p:Resources/p:Resource[p:UID='303']", ns)
     assert inactive is None
 
+    # Contiguous 1-based row <ID> values on Resource Sheet (no gaps or 9999 jumps before active resources)
+    all_resources = root.findall("p:Resources/p:Resource", ns)
+    ids = [int(r.find("p:ID", ns).text) for r in all_resources]
+    assert ids == list(range(len(all_resources))), f"Expected contiguous Resource Sheet IDs 0..N, got {ids}"
+
+    # Work resource must include MaxUnits and top-level StandardRate for Resource Sheet display
+    assert named.find("p:MaxUnits", ns).text == "1.00"
+    assert named.find("p:StandardRate", ns).text == "45.00"
+    assert named.find("p:OvertimeRate", ns).text == "67.50"
+
 
 def test_rate_tables_chronology_and_indices(sample_data):
     xml_str = build_ms_project_xml(sample_data["req"], sample_data["calendars"], sample_data["resources"])

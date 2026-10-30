@@ -340,37 +340,27 @@ def build_ms_project_xml(
             ET.SubElement(task_ext, "Value").text = str(field_val)
 
     # 5. Resources Section
+    # IMPORTANT: In MS Project Desktop, <ID> is the 1-based row position on the Resource Sheet
+    # (whereas <UID> is the stable unique identifier across schedules).
+    # If <ID> has gaps or a huge jump (e.g. Project Budget with ID=9999 placed before other resources),
+    # MS Project Desktop's Resource Sheet table breaks or hides rows after the non-sequential ID.
     resources_el = ET.SubElement(root, "Resources")
 
-    # Standard Null Resource (UID 0)
+    # Standard Null Resource (UID 0, ID 0)
     null_res = ET.SubElement(resources_el, "Resource")
     ET.SubElement(null_res, "UID").text = "0"
     ET.SubElement(null_res, "ID").text = "0"
     ET.SubElement(null_res, "Type").text = "1"
     ET.SubElement(null_res, "IsNull").text = "0"
 
-    # Budget Resource if budget is specified
-    budget_resource_uid = 9999
-    has_budget = template_req.budget_cost is not None and template_req.budget_cost > 0
-    if has_budget:
-        b_res = ET.SubElement(resources_el, "Resource")
-        ET.SubElement(b_res, "UID").text = str(budget_resource_uid)
-        ET.SubElement(b_res, "ID").text = str(budget_resource_uid)
-        ET.SubElement(b_res, "Name").text = "Project Budget"
-        ET.SubElement(b_res, "Type").text = "2"  # Cost resource
-        ET.SubElement(b_res, "IsNull").text = "0"
-        ET.SubElement(b_res, "CalendarUID").text = str(selected_cal.id)
-        ET.SubElement(b_res, "IsCostResource").text = "1"
-        ET.SubElement(b_res, "IsBudget").text = "1"
-        ET.SubElement(b_res, "IsGeneric").text = "0"
-        ET.SubElement(b_res, "IsInactive").text = "0"
-
-    # Enterprise Resources: ALL Active Resources exported to Project desktop
+    # Enterprise Resources: ALL Active Resources exported to Project desktop with contiguous 1..N row IDs
+    next_row_id = 1
     for res in active_resources:
         res_el = ET.SubElement(resources_el, "Resource")
-        # Stable UID and ID
+        # Stable UID across files; contiguous 1-based row ID for MS Project Resource Sheet
         ET.SubElement(res_el, "UID").text = str(res.id)
-        ET.SubElement(res_el, "ID").text = str(res.id)
+        ET.SubElement(res_el, "ID").text = str(next_row_id)
+        next_row_id += 1
         ET.SubElement(res_el, "GUID").text = res.guid
         ET.SubElement(res_el, "Name").text = res.name
         
@@ -384,6 +374,24 @@ def build_ms_project_xml(
         if res.department:
             ET.SubElement(res_el, "Group").text = res.department
 
+        # Standard Work resource defaults expected by MS Project Resource Sheet
+        if res_type_num == 1:
+            ET.SubElement(res_el, "MaxUnits").text = "1.00"
+            ET.SubElement(res_el, "PeakUnits").text = "1.00"
+            ET.SubElement(res_el, "OverAllocated").text = "0"
+
+        # Top-level default rate summary (Table A) for Resource Sheet columns
+        table_a_rates = [r for r in (res.rates or []) if RATE_TABLE_MAP.get(r.rate_table, 0) == 0]
+        default_rate = sorted(table_a_rates, key=lambda r: r.effective_date or date.min)[-1] if table_a_rates else (res.rates[0] if res.rates else None)
+        if default_rate and res_type_num == 1:
+            ET.SubElement(res_el, "StandardRate").text = f"{default_rate.standard_rate:.2f}"
+            ET.SubElement(res_el, "StandardRateFormat").text = "2"
+            ET.SubElement(res_el, "OvertimeRate").text = f"{default_rate.overtime_rate:.2f}"
+            ET.SubElement(res_el, "OvertimeRateFormat").text = "2"
+            ET.SubElement(res_el, "CostPerUse").text = f"{default_rate.cost_per_use:.2f}"
+
+        ET.SubElement(res_el, "AccrueAt").text = "3"  # Prorated
+
         # Calendar UID (Resource derived calendar)
         res_cal_uid = 1000 + res.id
         ET.SubElement(res_el, "CalendarUID").text = str(res_cal_uid)
@@ -391,6 +399,8 @@ def build_ms_project_xml(
         # Generic Flag (IsGeneric)
         ET.SubElement(res_el, "IsGeneric").text = "1" if res.is_generic else "0"
         ET.SubElement(res_el, "IsInactive").text = "0" if res.is_active else "1"
+        ET.SubElement(res_el, "IsEnterprise").text = "0"
+        ET.SubElement(res_el, "BookingType").text = "1"
 
         # Extended Attributes on Resource (e.g. Cost Center)
         for field_name, field_val in res.custom_field_values.items():
@@ -422,6 +432,23 @@ def build_ms_project_xml(
                 ET.SubElement(rate_entry, "OvertimeRate").text = f"{rate.overtime_rate:.2f}"
                 ET.SubElement(rate_entry, "OvertimeRateFormat").text = "2"
                 ET.SubElement(rate_entry, "CostPerUse").text = f"{rate.cost_per_use:.2f}"
+
+    # Budget Resource if budget is specified (placed after enterprise resources with sequential row ID)
+    budget_resource_uid = 9999
+    has_budget = template_req.budget_cost is not None and template_req.budget_cost > 0
+    if has_budget:
+        b_res = ET.SubElement(resources_el, "Resource")
+        ET.SubElement(b_res, "UID").text = str(budget_resource_uid)
+        ET.SubElement(b_res, "ID").text = str(next_row_id)
+        ET.SubElement(b_res, "Name").text = "Project Budget"
+        ET.SubElement(b_res, "Type").text = "2"  # Cost resource
+        ET.SubElement(b_res, "IsNull").text = "0"
+        ET.SubElement(b_res, "AccrueAt").text = "3"
+        ET.SubElement(b_res, "CalendarUID").text = str(selected_cal.id)
+        ET.SubElement(b_res, "IsCostResource").text = "1"
+        ET.SubElement(b_res, "IsBudget").text = "1"
+        ET.SubElement(b_res, "IsGeneric").text = "0"
+        ET.SubElement(b_res, "IsInactive").text = "0"
 
     # 6. Assignments Section (Budget assignment to Task 0)
     assignments_el = ET.SubElement(root, "Assignments")
