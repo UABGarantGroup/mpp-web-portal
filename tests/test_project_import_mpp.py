@@ -392,6 +392,51 @@ def test_leaf_task_progress_rollup_and_zero_work_budget_assignment(client, db_se
     assert metrics["finish_date"] == "2026-11-10"
 
 
+def test_import_mpp_upserts_existing_project_and_creates_new_project(client, db_session):
+    """
+    Verifies the unified Import from MPP behavior:
+    1) When the uploaded schedule matches an existing project (by ERP, project name, or technical GUID),
+       POST /api/projects/import-mpp updates the existing project and returns action == 'updated'
+       (without requiring PM owner selection for the existing project).
+    2) When the uploaded schedule does NOT match any existing project, POST /api/projects/import-mpp
+       runs the standard creation flow and returns action == 'created'.
+    """
+    pm = db_session.query(PortalUserDB).filter(PortalUserDB.is_active == True).first()
+    assert pm is not None
+
+    # 1. Import a brand new project -> should create (action == 'created')
+    new_task_name = "26-8811 BALTIC QUEEN thruster repair"
+    new_erp = "26-8811"
+    xml_create = _build_test_mspdi_xml(top_task_name=new_task_name, erp=new_erp, cost=14000.0)
+    resp_create = client.post(
+        "/api/projects/import-mpp",
+        data={"owner": pm.display_name, "calendar_id": "1"},
+        files={"file": ("baltic_queen.xml", xml_create, "application/xml")},
+    )
+    assert resp_create.status_code == 200, resp_create.text
+    created_data = resp_create.json()
+    assert created_data["action"] == "created"
+    assert created_data["erp_number"] == new_erp
+    assert created_data["name"] == new_task_name
+    assert created_data["metrics"]["cost"] == 14000.0
+    proj_id = created_data["id"]
+
+    # 2. Re-import an updated schedule for the same project via /api/projects/import-mpp
+    #    Even without passing owner or explicit erp_number, it must detect the existing project and update it!
+    xml_update = _build_test_mspdi_xml(top_task_name=new_task_name, erp=new_erp, cost=29500.0)
+    resp_update = client.post(
+        "/api/projects/import-mpp",
+        data={},
+        files={"file": ("baltic_queen_v2.xml", xml_update, "application/xml")},
+    )
+    assert resp_update.status_code == 200, resp_update.text
+    updated_data = resp_update.json()
+    assert updated_data["action"] == "updated"
+    assert updated_data["id"] == proj_id
+    assert updated_data["erp_number"] == new_erp
+    assert updated_data["metrics"]["cost"] == 29500.0
+
+
 
 
 

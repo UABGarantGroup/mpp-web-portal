@@ -560,24 +560,24 @@
     </div>
   </div>
 
-  <!-- Import New Project from MPP Modal -->
+  <!-- Import / Update Project from MPP Modal -->
   <div id="import-project-modal" class="modal-overlay" style="display: none;">
     <div class="modal-content" style="width: 540px;">
       <div class="modal-header">
-        <h3 id="import-modal-title"><i class="fa-solid fa-file-import" style="color:var(--primary);"></i> Import Project from MPP File</h3>
+        <h3 id="import-modal-title"><i class="fa-solid fa-file-import" style="color:var(--primary);"></i> Import / Update Project from MPP</h3>
         <button style="border:none;background:none;font-size:1.2rem;cursor:pointer;" onclick="closeImportProjectModal()">&times;</button>
       </div>
       <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
-        Import a project directly from an existing <strong>.mpp</strong> or <strong>.xml</strong> schedule. The project title will automatically be assigned from the <strong>top task description</strong>.
+        Upload an <strong>.mpp</strong> or <strong>.xml</strong> schedule. If the project already exists in the portal, its schedule and metrics will be <strong>updated automatically</strong>; otherwise, a new project will be imported using the <strong>top task description</strong>.
       </p>
       <form id="import-project-form" onsubmit="handleImportProject(event)">
         <div class="form-group" style="margin-bottom:0.85rem;">
-          <label for="import-proj-owner">Assign Project Manager (Owner) *</label>
-          <select id="import-proj-owner" required style="width:100%; padding:0.5rem;">
+          <label for="import-proj-owner">Assign Project Manager (Owner for new projects)</label>
+          <select id="import-proj-owner" style="width:100%; padding:0.5rem;">
             <option value="">Select Project Manager (Portal User)...</option>
           </select>
           <small style="font-size:0.75rem; color:var(--text-muted); display:block; margin-top:0.2rem;">
-            Assign a responsible Project Manager from registered users before importing.
+            Required when importing a new project. Existing projects keep their current owner.
           </small>
         </div>
         <div class="form-group" style="margin-bottom:0.85rem;">
@@ -588,7 +588,7 @@
           <label for="import-proj-erp">ERP Project Code (Optional)</label>
           <input type="text" id="import-proj-erp" placeholder="e.g. 26-0537 (leave blank to auto-detect or auto-generate)" style="width:100%; padding:0.5rem; border:1px solid #d2d0ce; border-radius:4px;">
           <small style="font-size:0.75rem; color:var(--text-muted); display:block; margin-top:0.2rem;">
-            If left blank, extracted from MPP Text1 attribute or automatically generated.
+            If left blank, matched by technical project ID / name or extracted from MPP Text1.
           </small>
         </div>
         <div class="form-group" style="margin-bottom:1rem;">
@@ -598,7 +598,7 @@
         <div id="import-proj-error" class="badge" style="display:none; width:100%; box-sizing:border-box; background:#fde7e9; color:#a80000; padding:0.5rem; text-align:left; white-space:normal; font-size:0.8rem; border:1px solid #f8b4b8; margin-bottom:1rem;"></div>
         <div class="modal-actions">
           <button type="button" class="btn btn-secondary" onclick="closeImportProjectModal()">Cancel</button>
-          <button type="submit" id="btn-submit-import-proj" class="btn"><i class="fa-solid fa-file-import"></i> Import Project</button>
+          <button type="submit" id="btn-submit-import-proj" class="btn"><i class="fa-solid fa-file-import"></i> Import / Update Project</button>
         </div>
       </form>
     </div>
@@ -1669,9 +1669,6 @@
                 <button class="btn btn-sm" onclick="downloadTemplateForProject(${p.id})" title="Download MS Project XML Template (${safeErpHtml})" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
                   <i class="fa-solid fa-download"></i> .XML
                 </button>
-                <button class="btn btn-sm btn-secondary" onclick="openUploadScheduleModal(${p.id})" title="Upload .mpp / .xml for ${safeErpHtml}" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
-                  <i class="fa-solid fa-upload"></i> Upload
-                </button>
                 <button class="btn btn-sm btn-secondary" onclick="openRefreshWizard(${p.id})" title="Refresh rates/holidays for ${safeErpHtml}" style="padding:0.2rem 0.45rem; font-size:0.75rem;">
                   <i class="fa-solid fa-arrows-rotate"></i> Refresh
                 </button>
@@ -2196,10 +2193,6 @@
     async function handleImportProject(event) {
       event.preventDefault();
       const owner = document.getElementById("import-proj-owner").value.trim();
-      if (!owner) {
-        alert("Please select a Project Manager before importing.");
-        return;
-      }
       const fileInput = document.getElementById("import-proj-file");
       if (!fileInput.files || fileInput.files.length === 0) {
         alert("Please select an MS Project schedule file (.mpp or .xml).");
@@ -2212,11 +2205,11 @@
       const btn = document.getElementById("btn-submit-import-proj");
       const origText = btn.innerHTML;
       btn.disabled = true;
-      btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Importing...`;
+      btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Processing...`;
 
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("owner", owner);
+      if (owner) formData.append("owner", owner);
       if (erp) formData.append("erp_number", erp);
       if (calId) formData.append("calendar_id", calId);
 
@@ -2231,7 +2224,7 @@
         });
         const result = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-          const msg = result.detail || "Failed to import project schedule.";
+          const msg = result.detail || "Failed to import or update project schedule.";
           if (errBox) {
             errBox.textContent = msg;
             errBox.style.display = "block";
@@ -2242,7 +2235,11 @@
         }
 
         closeImportProjectModal();
-        alert(`Success! Project "${result.name || 'Imported Project'}" imported and assigned to PM.`);
+        if (result.action === "updated" && result.metrics) {
+          alert(`Updated existing project "${result.name || result.project_name}" (${result.erp_number})!\n% Complete: ${result.metrics.percent_complete}%, Work: ${result.metrics.percent_work_complete}%, Cost: €${formatNumber(result.metrics.cost)}, Actual Cost: €${formatNumber(result.metrics.actual_cost)}`);
+        } else {
+          alert(`Success! New project "${result.name || 'Imported Project'}" imported and assigned to PM.`);
+        }
         switchTab("portfolio");
         loadPortfolio();
       } catch (err) {

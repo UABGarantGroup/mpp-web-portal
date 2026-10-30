@@ -412,9 +412,9 @@ def parse_project_xml(file_bytes: bytes) -> Dict[str, Any]:
     budget_cost = parse_float(find_text(task_0, f"{prefix}BudgetCost")) or task_0_budget_cost
     baseline_budget = parse_float(find_text(task_0, f"{prefix}BaselineBudget") or find_text(task_0, f"{prefix}Baseline/{prefix}BudgetCost")) or task_0_baseline_budget
 
-    # Extract ERP Project Number and Technical PortalProjectGUID from Task 0 ExtendedAttributes and GUID
-    erp_number = None
-    portal_project_guid = None
+    # Extract ERP Project Number and Technical PortalProjectGUID from Task 0 ExtendedAttributes, direct Text1, and GUID
+    erp_number = find_text(task_0, f"{prefix}Text1") if task_0 is not None else None
+    portal_project_guid = find_text(task_0, f"{prefix}Text30") if task_0 is not None else None
     task_0_guid = find_text(task_0, f"{prefix}GUID") if task_0 is not None else None
     project_props_guid = find_text(root, f"{prefix}GUID")
     if task_0 is not None:

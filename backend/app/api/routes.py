@@ -1911,6 +1911,227 @@ def update_project_status(
 
 # --- Project Schedule Upload & Refresh Endpoints (Phase 4) ---
 
+def _apply_schedule_update_to_project(
+    proj: ProjectDB,
+    parsed: Dict[str, Any],
+    filename: str,
+    user: CurrentUser,
+    db: Session,
+) -> Dict[str, Any]:
+    """
+    Applies parsed MS Project schedule metrics, budget alignment, team resource links,
+    technical GUID binding, and audit logging to an existing ProjectDB record.
+    """
+    proj_guid_low = (proj.project_guid or "").strip().lower()
+    tech_guids = [str(g).strip().lower() for g in (parsed.get("technical_guids") or []) if g and str(g).strip()]
+
+    # Bind the schedule's technical GUID to the project record if not already used by another project
+    primary_file_guid = (parsed.get("project_guid") or "").strip()
+    if primary_file_guid and primary_file_guid.lower() != proj_guid_low:
+        conflict_proj = (
+            db.query(ProjectDB)
+            .filter(ProjectDB.project_guid == primary_file_guid, ProjectDB.id != proj.id)
+            .first()
+        )
+        if not conflict_proj:
+            proj.project_guid = primary_file_guid
+
+    # Microsoft Project logic alignment:
+    # If the uploaded file defines a Budget Resource assignment (budget_cost > 0), align both
+    # the project master budget and the snapshot budget with the MS Project file.
+    file_budget_cost = parsed.get("budget_cost")
+    if file_budget_cost is not None and file_budget_cost > 0.0:
+        proj.budget_cost = file_budget_cost
+        effective_budget_cost = file_budget_cost
+    else:
+        effective_budget_cost = proj.budget_cost
+
+    file_baseline_budget = parsed.get("baseline_budget", 0.0)
+    if parsed.get("start_date"):
+        proj.start_date = parsed["start_date"]
+
+    # Update latest project snapshot or create new one
+    now = datetime.utcnow()
+    snapshot = ProjectSnapshotDB(
+        project_id=proj.id,
+        percent_complete=parsed["percent_complete"],
+        percent_work_complete=parsed["percent_work_complete"],
+        start_date=parsed["start_date"] or proj.start_date,
+        finish_date=parsed["finish_date"],
+        baseline_finish=parsed["baseline_finish"],
+        actual_cost=parsed["actual_cost"],
+        cost=parsed["cost"],
+        baseline_cost=parsed["baseline_cost"],
+        baseline_budget=file_baseline_budget,
+        budget_cost=effective_budget_cost,
+        source="UPLOAD",
+        recorded_at=now,
+    )
+    db.add(snapshot)
+
+    # Update project last_updated_by and last_updated_at
+    proj.last_updated_by = user.email
+    proj.last_updated_at = now
+
+    # Detect generic resources in the uploaded file for the replacement wizard and sync active team resources
+    file_resources = parsed.get("resources", [])
+    generic_found = [r for r in file_resources if r.get("is_generic")]
+    for r_info in file_resources:
+        r_name = (r_info.get("name") or "").strip()
+        if r_name and not r_info.get("is_budget"):
+            match_res = db.query(ResourceDB).filter(ResourceDB.name.ilike(r_name)).first()
+            if match_res:
+                existing_link = (
+                    db.query(ProjectTeamResourceDB)
+                    .filter(
+                        ProjectTeamResourceDB.project_id == proj.id,
+                        ProjectTeamResourceDB.resource_id == match_res.id,
+                    )
+                    .first()
+                )
+                if not existing_link:
+                    db.add(ProjectTeamResourceDB(project_id=proj.id, resource_id=match_res.id))
+
+    tech_guid_suffix = f", technical_guids={','.join(tech_guids)}" if tech_guids else ""
+    audit = AuditLogDB(
+        entity_type="PROJECT_SCHEDULE",
+        entity_id=str(proj.id),
+        action="UPLOAD",
+        changed_by=user.email,
+        details=f"Schedule file '{filename}' uploaded by {user.email}. % Complete: {parsed['percent_complete']}%, Cost: €{parsed['cost']}, Baseline Cost: €{parsed['baseline_cost']}, Budget Cost: €{effective_budget_cost}, Baseline Budget: €{file_baseline_budget}{tech_guid_suffix}",
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(proj)
+
+    return {
+        "action": "updated",
+        "id": proj.id,
+        "project_id": proj.id,
+        "project_guid": proj.project_guid,
+        "erp_number": proj.erp_number,
+        "name": proj.name,
+        "project_name": proj.name,
+        "owner": proj.owner,
+        "budget_cost": proj.budget_cost,
+        "calendar_id": proj.calendar_id,
+        "status": proj.status,
+        "start_date": proj.start_date.isoformat() if proj.start_date else None,
+        "message": f"Schedule parsed and portfolio snapshot updated from '{filename}'",
+        "metrics": {
+            "percent_complete": parsed["percent_complete"],
+            "percent_work_complete": parsed["percent_work_complete"],
+            "start_date": parsed["start_date"],
+            "finish_date": parsed["finish_date"],
+            "baseline_finish": parsed["baseline_finish"],
+            "actual_cost": parsed["actual_cost"],
+            "cost": parsed["cost"],
+            "baseline_cost": parsed["baseline_cost"],
+            "baseline_budget": snapshot.baseline_budget,
+            "budget_cost": snapshot.budget_cost,
+        },
+        "file_resources": file_resources,
+        "generic_resources_to_replace": generic_found,
+    }
+
+
+def _find_existing_project_for_schedule(
+    parsed: Dict[str, Any],
+    filename: str,
+    explicit_erp: Optional[str],
+    db: Session,
+) -> Optional[ProjectDB]:
+    """
+    Checks whether an uploaded/imported schedule matches an existing project in ProjectDB:
+    1. Explicit PortalProjectGUID (Task 0 Text30) or technical GUIDs in ProjectDB.project_guid or AuditLogDB history.
+    2. Explicit ERP number provided by user.
+    3. Project name / top task description / filename stem match against existing projects (or AuditLogDB rename history).
+    4. Parsed file ERP number (Task 0 Text1) match when unambiguous.
+    """
+    portal_guid = (parsed.get("portal_project_guid") or "").strip().lower()
+    tech_guids = [str(g).strip().lower() for g in (parsed.get("technical_guids") or []) if g and str(g).strip()]
+    file_erp = (parsed.get("erp_number") or "").strip()
+    file_title = (parsed.get("title") or "").strip()
+    file_task_name = (parsed.get("task_name") or "").strip()
+    clean_fn = os.path.basename(filename or "").strip()
+    clean_stem = os.path.splitext(clean_fn)[0].strip()
+    exp_erp = (explicit_erp or "").strip()
+
+    # 1. Explicit PortalProjectGUID (Text30) match
+    if portal_guid:
+        matched = db.query(ProjectDB).filter(ProjectDB.project_guid.ilike(portal_guid)).first()
+        if matched:
+            return matched
+
+    # 2. Any technical GUID (Task 0 GUID / Project GUID) match on ProjectDB.project_guid
+    for tg in tech_guids:
+        matched = db.query(ProjectDB).filter(ProjectDB.project_guid.ilike(tg)).first()
+        if matched:
+            return matched
+
+    # 3. Technical GUID match in AuditLogDB history (from prior IMPORT_MPP or UPLOAD)
+    if tech_guids:
+        guid_logs = (
+            db.query(AuditLogDB)
+            .filter(AuditLogDB.action.in_(["IMPORT_MPP", "UPLOAD"]))
+            .order_by(AuditLogDB.id.desc())
+            .all()
+        )
+        for log in guid_logs:
+            details_low = (log.details or "").lower()
+            if any(tg in details_low for tg in tech_guids):
+                if log.entity_id and str(log.entity_id).isdigit():
+                    matched = db.query(ProjectDB).filter(ProjectDB.id == int(log.entity_id)).first()
+                    if matched:
+                        return matched
+
+    # 4. Explicit ERP number entered by the user
+    if exp_erp:
+        matched = db.query(ProjectDB).filter(ProjectDB.erp_number.ilike(exp_erp)).first()
+        if matched:
+            return matched
+
+    # 5. Match by project name / top task description / filename stem (handles renamed ERP or auto-generated PRJ-xxx)
+    all_projects = db.query(ProjectDB).all()
+    candidates = [c.strip() for c in (file_task_name, file_title, clean_stem) if c and len(c.strip()) >= 4]
+    for cand in candidates:
+        cand_low = cand.lower()
+        for p in all_projects:
+            p_name_low = (p.name or "").strip().lower()
+            if p_name_low and p_name_low == cand_low:
+                return p
+
+    # Check substring / rename history match on project name
+    if candidates:
+        rename_logs = (
+            db.query(AuditLogDB)
+            .filter(AuditLogDB.action.in_(["IMPORT_MPP", "UPDATE_NAME"]))
+            .order_by(AuditLogDB.id.desc())
+            .all()
+        )
+        for cand in candidates:
+            cand_low = cand.lower()
+            if len(cand_low) >= 6:
+                for p in all_projects:
+                    p_name_low = (p.name or "").strip().lower()
+                    if p_name_low and len(p_name_low) >= 6 and (cand_low in p_name_low or p_name_low in cand_low):
+                        return p
+                for log in rename_logs:
+                    if f"'{cand_low}'" in (log.details or "").lower():
+                        if log.entity_id and str(log.entity_id).isdigit():
+                            matched = db.query(ProjectDB).filter(ProjectDB.id == int(log.entity_id)).first()
+                            if matched:
+                                return matched
+
+    # 6. Match by parsed file ERP (Task 0 Text1)
+    if file_erp:
+        matched = db.query(ProjectDB).filter(ProjectDB.erp_number.ilike(file_erp)).first()
+        if matched:
+            return matched
+
+    return None
+
+
 @router.post("/api/projects/{project_id}/upload-schedule", tags=["Projects"])
 async def upload_project_schedule(
     project_id: int,
@@ -1925,9 +2146,10 @@ async def upload_project_schedule(
     _assert_project_access(proj, user, allow_finance=False, allow_rm=False)
 
     content = await _read_and_validate_upload(file, (".mpp", ".xml"))
+    clean_filename = os.path.basename(file.filename or "schedule.xml")
 
     try:
-        parsed = parse_project_file(content, os.path.basename(file.filename or "schedule.xml"))
+        parsed = parse_project_file(content, clean_filename)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to parse project file: {str(e)}")
 
@@ -1940,7 +2162,7 @@ async def upload_project_schedule(
     proj_guid_low = (proj.project_guid or "").strip().lower()
     target_erp = (proj.erp_number or "").strip().lower()
     target_name = (proj.name or "").strip().lower()
-    clean_fn = os.path.basename(file.filename or "").strip().lower()
+    clean_fn = clean_filename.strip().lower()
     clean_stem = os.path.splitext(clean_fn)[0].strip()
     is_mpp_binary = clean_fn.endswith(".mpp")
 
@@ -2028,104 +2250,7 @@ async def upload_project_schedule(
                 detail=f"Project mismatch! File contains ERP '{file_erp}' belonging to project '{other_erp_proj.name}', but target row is '{proj.erp_number}' ({proj.name}). Upload rejected to prevent overwriting wrong project.",
             )
 
-    # Bind the schedule's technical GUID to the project record if not already used by another project
-    primary_file_guid = (parsed.get("project_guid") or "").strip()
-    if primary_file_guid and primary_file_guid.lower() != proj_guid_low:
-        conflict_proj = (
-            db.query(ProjectDB)
-            .filter(ProjectDB.project_guid == primary_file_guid, ProjectDB.id != proj.id)
-            .first()
-        )
-        if not conflict_proj:
-            proj.project_guid = primary_file_guid
-
-    # Microsoft Project logic alignment:
-    # If the uploaded file defines a Budget Resource assignment (budget_cost > 0), align both
-    # the project master budget and the snapshot budget with the MS Project file.
-    file_budget_cost = parsed.get("budget_cost")
-    if file_budget_cost is not None and file_budget_cost > 0.0:
-        proj.budget_cost = file_budget_cost
-        effective_budget_cost = file_budget_cost
-    else:
-        effective_budget_cost = proj.budget_cost
-
-    file_baseline_budget = parsed.get("baseline_budget", 0.0)
-    if parsed.get("start_date"):
-        proj.start_date = parsed["start_date"]
-
-    # Update latest project snapshot or create new one
-    now = datetime.utcnow()
-    snapshot = ProjectSnapshotDB(
-        project_id=proj.id,
-        percent_complete=parsed["percent_complete"],
-        percent_work_complete=parsed["percent_work_complete"],
-        start_date=parsed["start_date"] or proj.start_date,
-        finish_date=parsed["finish_date"],
-        baseline_finish=parsed["baseline_finish"],
-        actual_cost=parsed["actual_cost"],
-        cost=parsed["cost"],
-        baseline_cost=parsed["baseline_cost"],
-        baseline_budget=file_baseline_budget,
-        budget_cost=effective_budget_cost,
-        source="UPLOAD",
-        recorded_at=now,
-    )
-    db.add(snapshot)
-
-    # Update project last_updated_by and last_updated_at
-    proj.last_updated_by = user.email
-    proj.last_updated_at = now
-
-    # Detect generic resources in the uploaded file for the replacement wizard and sync active team resources
-    file_resources = parsed.get("resources", [])
-    generic_found = [r for r in file_resources if r.get("is_generic")]
-    for r_info in file_resources:
-        r_name = (r_info.get("name") or "").strip()
-        if r_name and not r_info.get("is_budget"):
-            match_res = db.query(ResourceDB).filter(ResourceDB.name.ilike(r_name)).first()
-            if match_res:
-                existing_link = (
-                    db.query(ProjectTeamResourceDB)
-                    .filter(
-                        ProjectTeamResourceDB.project_id == proj.id,
-                        ProjectTeamResourceDB.resource_id == match_res.id,
-                    )
-                    .first()
-                )
-                if not existing_link:
-                    db.add(ProjectTeamResourceDB(project_id=proj.id, resource_id=match_res.id))
-
-    tech_guid_suffix = f", technical_guids={','.join(tech_guids)}" if tech_guids else ""
-    audit = AuditLogDB(
-        entity_type="PROJECT_SCHEDULE",
-        entity_id=str(proj.id),
-        action="UPLOAD",
-        changed_by=user.email,
-        details=f"Schedule file '{os.path.basename(file.filename or '')}' uploaded by {user.email}. % Complete: {parsed['percent_complete']}%, Cost: €{parsed['cost']}, Baseline Cost: €{parsed['baseline_cost']}, Budget Cost: €{effective_budget_cost}, Baseline Budget: €{file_baseline_budget}{tech_guid_suffix}",
-    )
-    db.add(audit)
-    db.commit()
-
-    return {
-        "message": f"Schedule parsed and portfolio snapshot updated from '{os.path.basename(file.filename or '')}'",
-        "project_id": proj.id,
-        "project_name": proj.name,
-        "erp_number": proj.erp_number,
-        "metrics": {
-            "percent_complete": parsed["percent_complete"],
-            "percent_work_complete": parsed["percent_work_complete"],
-            "start_date": parsed["start_date"],
-            "finish_date": parsed["finish_date"],
-            "baseline_finish": parsed["baseline_finish"],
-            "actual_cost": parsed["actual_cost"],
-            "cost": parsed["cost"],
-            "baseline_cost": parsed["baseline_cost"],
-            "baseline_budget": snapshot.baseline_budget,
-            "budget_cost": snapshot.budget_cost,
-        },
-        "file_resources": file_resources,
-        "generic_resources_to_replace": generic_found,
-    }
+    return _apply_schedule_update_to_project(proj, parsed, clean_filename, user, db)
 
 
 @router.post("/api/projects/{project_id}/refresh", tags=["Projects"])
@@ -2162,18 +2287,35 @@ def refresh_project_template(
 @router.post("/api/projects/import-mpp", tags=["Projects"])
 async def import_project_from_mpp(
     file: UploadFile = File(...),
-    owner: str = Form(..., description="Project Manager selected from portal users"),
+    owner: Optional[str] = Form(None, description="Project Manager selected from portal users"),
     erp_number: Optional[str] = Form(None, description="Optional ERP project code"),
     calendar_id: Optional[int] = Form(1, description="Enterprise calendar ID"),
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require_roles(["PM", "Admin"])),
 ):
     """
-    Imports a new project directly from an MPP or MSPDI XML file.
-    Assigns the specified Project Manager from the users list, and sets
-    the project title from the top task description of the MPP schedule.
+    Unified Import / Update from MPP or MSPDI XML file:
+    - If the schedule matches an existing project (by technical GUID, ERP code, or project name),
+      updates the existing project's schedule metrics, snapshot, budget, and team resources.
+    - Otherwise, imports a new project, requiring a valid Project Manager from registered portal users
+      and setting the project title from the top task description of the MPP schedule.
     """
-    # 1. Validate PM owner
+    # 1. Read and parse file
+    content = await _read_and_validate_upload(file, (".mpp", ".xml"))
+    filename = os.path.basename(file.filename or "imported_schedule.mpp")
+
+    try:
+        parsed = parse_project_file(content, filename)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse project file: {str(e)}")
+
+    # 2. Check if project already exists -> if so, update it
+    existing_proj = _find_existing_project_for_schedule(parsed, filename, erp_number, db)
+    if existing_proj is not None:
+        _assert_project_access(existing_proj, user, allow_finance=False, allow_rm=False)
+        return _apply_schedule_update_to_project(existing_proj, parsed, filename, user, db)
+
+    # 3. Project does not exist -> validate PM owner and start old way of import from MPP
     clean_owner = (owner or "").strip()
     if not clean_owner:
         raise HTTPException(status_code=400, detail="Project Manager selection is required before importing.")
@@ -2193,16 +2335,7 @@ async def import_project_from_mpp(
             detail=f"Selected Project Manager '{clean_owner}' not found in registered portal users.",
         )
 
-    # 2. Read and parse file
-    content = await _read_and_validate_upload(file, (".mpp", ".xml"))
-    filename = os.path.basename(file.filename or "imported_schedule.mpp")
-
-    try:
-        parsed = parse_project_file(content, filename)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to parse project file: {str(e)}")
-
-    # 3. Project Name: "for project name please use top TASK description from MPP file"
+    # 4. Project Name: "for project name please use top TASK description from MPP file"
     top_task_desc = (
         parsed.get("task_name")
         or parsed.get("title")
@@ -2213,15 +2346,9 @@ async def import_project_from_mpp(
         top_task_desc = top_task_desc.strip()
     project_name = top_task_desc or os.path.splitext(filename)[0]
 
-    # 4. Resolve ERP number
+    # 5. Resolve ERP number
     candidate_erp = (erp_number or "").strip() or (parsed.get("erp_number") or "").strip()
-    if candidate_erp:
-        existing = db.query(ProjectDB).filter(ProjectDB.erp_number.ilike(candidate_erp)).first()
-        if existing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Project with ERP number '{candidate_erp}' already exists ({existing.name}).",
-            )
+    if candidate_erp and not db.query(ProjectDB).filter(ProjectDB.erp_number.ilike(candidate_erp)).first():
         final_erp = candidate_erp
     else:
         # Auto-generate unique ERP number
@@ -2234,17 +2361,17 @@ async def import_project_from_mpp(
         else:
             final_erp = f"{prefix}{int(datetime.utcnow().timestamp())}"
 
-    # 5. Resolve Calendar ID
+    # 6. Resolve Calendar ID
     target_cal_id = calendar_id or 1
     cal = db.query(CalendarDB).filter(CalendarDB.id == target_cal_id).first()
     if not cal:
         first_cal = db.query(CalendarDB).first()
         target_cal_id = first_cal.id if first_cal else 1
 
-    # 6. Budget calculation alignment
+    # 7. Budget calculation alignment
     effective_budget = parsed.get("budget_cost", 0.0) or 0.0
 
-    # 7. Create ProjectDB (binding the schedule's technical GUID if available and unused)
+    # 8. Create ProjectDB (binding the schedule's technical GUID if available and unused)
     imported_guid = (parsed.get("project_guid") or "").strip()
     if imported_guid and not db.query(ProjectDB).filter(ProjectDB.project_guid == imported_guid).first():
         chosen_guid = imported_guid
@@ -2266,7 +2393,7 @@ async def import_project_from_mpp(
     db.add(new_project)
     db.flush()
 
-    # 8. Link active stage definitions
+    # 9. Link active stage definitions
     active_stages = db.query(StageDefinitionDB).filter(StageDefinitionDB.is_active == True).all()
     for s_def in active_stages:
         st_status = ProjectStageStatusDB(
@@ -2277,7 +2404,7 @@ async def import_project_from_mpp(
         )
         db.add(st_status)
 
-    # 9. Link team resources if found in file
+    # 10. Link team resources if found in file
     file_resources = parsed.get("resources", [])
     for r_info in file_resources:
         r_name = r_info.get("name")
@@ -2286,7 +2413,7 @@ async def import_project_from_mpp(
             if match_res:
                 db.add(ProjectTeamResourceDB(project_id=new_project.id, resource_id=match_res.id))
 
-    # 10. Initial project snapshot capturing all parsed metrics
+    # 11. Initial project snapshot capturing all parsed metrics
     init_snap = ProjectSnapshotDB(
         project_id=new_project.id,
         percent_complete=parsed.get("percent_complete", 0.0),
@@ -2303,7 +2430,7 @@ async def import_project_from_mpp(
     )
     db.add(init_snap)
 
-    # 11. Audit log (including technical_guids for future schedule upload matching)
+    # 12. Audit log (including technical_guids for future schedule upload matching)
     imported_tech_guids = [str(g).strip().lower() for g in (parsed.get("technical_guids") or []) if g and str(g).strip()]
     tech_guid_suffix = f", technical_guids={','.join(imported_tech_guids)}" if imported_tech_guids else ""
     audit = AuditLogDB(
@@ -2318,16 +2445,31 @@ async def import_project_from_mpp(
     db.refresh(new_project)
 
     return {
+        "action": "created",
         "id": new_project.id,
+        "project_id": new_project.id,
         "project_guid": new_project.project_guid,
         "erp_number": new_project.erp_number,
         "name": new_project.name,
+        "project_name": new_project.name,
         "owner": new_project.owner,
         "budget_cost": new_project.budget_cost,
         "calendar_id": new_project.calendar_id,
         "status": new_project.status,
         "start_date": new_project.start_date.isoformat() if new_project.start_date else None,
         "message": f"Project '{new_project.name}' imported successfully from '{filename}'",
+        "metrics": {
+            "percent_complete": init_snap.percent_complete,
+            "percent_work_complete": init_snap.percent_work_complete,
+            "start_date": parsed.get("start_date"),
+            "finish_date": parsed.get("finish_date"),
+            "baseline_finish": parsed.get("baseline_finish"),
+            "actual_cost": init_snap.actual_cost,
+            "cost": init_snap.cost,
+            "baseline_cost": init_snap.baseline_cost,
+            "baseline_budget": init_snap.baseline_budget,
+            "budget_cost": init_snap.budget_cost,
+        },
     }
 
 
