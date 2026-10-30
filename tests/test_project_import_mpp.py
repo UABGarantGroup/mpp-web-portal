@@ -189,3 +189,56 @@ def test_update_existing_imported_project_with_auto_erp_succeeds(client, db_sess
     assert up_data["metrics"]["cost"] == 24500.0
 
 
+def test_rename_project_preserves_custom_name_and_allows_schedule_uploads(client, db_session):
+    """
+    Verifies that:
+    1. First-time import sets project name from Task 0 description.
+    2. PUT /api/projects/{project_id}/name updates the project display name in the portal.
+    3. Re-uploading the schedule file after renaming succeeds and does NOT overwrite the modified portal project name.
+    """
+    pm = db_session.query(PortalUserDB).filter(PortalUserDB.is_active == True).first()
+    assert pm is not None
+
+    initial_task0_name = "26-0701 NORDIC STAR main engine overhaul"
+    xml_bytes = _build_test_mspdi_xml(top_task_name=initial_task0_name, erp=None, cost=15000.0)
+
+    # 1. Initial import sets name from Task 0
+    import_resp = client.post(
+        "/api/projects/import-mpp",
+        data={"owner": pm.display_name, "calendar_id": "1"},
+        files={"file": (f"{initial_task0_name}.xml", xml_bytes, "application/xml")},
+    )
+    assert import_resp.status_code == 200, import_resp.text
+    imported = import_resp.json()
+    proj_id = imported["id"]
+    assert imported["name"] == initial_task0_name
+
+    # 2. Rename project in portal
+    custom_portal_name = "26-0701 NORDIC STAR - Custom Portal Display Name"
+    rename_resp = client.put(
+        f"/api/projects/{proj_id}/name",
+        json={"name": custom_portal_name},
+    )
+    assert rename_resp.status_code == 200, rename_resp.text
+    assert rename_resp.json()["name"] == custom_portal_name
+
+    # Empty name must be rejected
+    bad_rename = client.put(
+        f"/api/projects/{proj_id}/name",
+        json={"name": "   "},
+    )
+    assert bad_rename.status_code in (400, 422)
+
+    # 3. Upload updated schedule where Task 0 still has original schedule task name
+    updated_xml = _build_test_mspdi_xml(top_task_name=initial_task0_name, erp=None, cost=31000.0)
+    up_resp = client.post(
+        f"/api/projects/{proj_id}/upload-schedule",
+        files={"file": (f"{initial_task0_name}.xml", updated_xml, "application/xml")},
+    )
+    assert up_resp.status_code == 200, up_resp.text
+    up_data = up_resp.json()
+    assert up_data["project_name"] == custom_portal_name
+    assert up_data["metrics"]["cost"] == 31000.0
+
+
+

@@ -45,7 +45,8 @@
    - Work baseline costs roll up from leaf tasks when summary baseline cost is omitted or zero.
    - Harmonizes project master budget (`ProjectDB.budget_cost`) and snapshot metrics upon schedule upload.
    - Direct MPP Project Import (`POST /api/projects/import-mpp`): creates new projects directly from `.mpp` or `.xml` schedules, requiring PM assignment from registered portal users, deriving project title from top task description, and provisioning baseline snapshot metrics.
-   - Schedule Upload Verification (`POST /api/projects/{project_id}/upload-schedule`): validates uploaded schedules against target project ERP number or project name (`title`, `task_name`, or filename stem), seamlessly supporting updates to MPP-imported projects with auto-generated `PRJ-YYYY-XXXXXX` codes while rejecting mismatched project files.
+   - Editable Project Display Name (`PUT /api/projects/{project_id}/name`): allows the project owner PM or Admin to modify the portal project name after initial import without altering any task names inside the MS Project schedule or breaking subsequent schedule uploads.
+   - Schedule Upload Verification (`POST /api/projects/{project_id}/upload-schedule`): validates uploaded schedules against target project ERP number or project name (`title`, `task_name`, filename stem, or audit history), seamlessly supporting updates to MPP-imported projects with auto-generated `PRJ-YYYY-XXXXXX` codes while rejecting mismatched project files.
    - Robust JVM & MPXJ runtime bridge (`_find_jvm_path`): automatically discovers JVM libraries across `settings.JVM_PATH`, `JAVA_HOME`, Windows JDK/JBR installations (Android Studio JBR, Adoptium, Corretto, Microsoft OpenJDK), and JPype defaults, while isolating first-chance Windows probe signals.
 
 7. **Microsoft SQL Server Engine & Migration Automation:**

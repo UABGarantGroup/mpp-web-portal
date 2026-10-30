@@ -1208,6 +1208,7 @@ from backend.app.db.models import (
 from backend.app.models.schemas import (
     ProjectCreate,
     ProjectBudgetUpdate,
+    ProjectNameUpdate,
     StageDefinitionSchema,
     StageDefinitionCreate,
     StageStatusUpdate,
@@ -1487,6 +1488,55 @@ def update_project_budget(
     db.commit()
 
     return {"project_id": proj.id, "budget_cost": proj.budget_cost, "updated_by": user.email}
+
+
+@router.put("/api/projects/{project_id}/name", tags=["Projects"])
+def update_project_name(
+    project_id: int,
+    name_in: ProjectNameUpdate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_roles(["PM", "Admin"])),
+):
+    """
+    Updates the project display name in the portal.
+    Allowed for Admin or the PM who owns the project.
+    Does not modify any task names inside the MS Project schedule.
+    """
+    proj = db.query(ProjectDB).filter(ProjectDB.id == project_id).first()
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    _assert_project_access(proj, user, allow_finance=False, allow_rm=False)
+
+    new_name = (name_in.name or "").strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Project name cannot be empty")
+    if len(new_name) > 255:
+        new_name = new_name[:255]
+
+    old_name = proj.name
+    proj.name = new_name
+    proj.last_updated_by = user.email
+    proj.last_updated_at = datetime.utcnow()
+
+    audit = AuditLogDB(
+        entity_type="PROJECT",
+        entity_id=str(proj.id),
+        action="UPDATE_NAME",
+        changed_by=user.email,
+        details=f"Project name changed from '{old_name}' to '{new_name}' by {user.email}",
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(proj)
+
+    return {
+        "project_id": proj.id,
+        "erp_number": proj.erp_number,
+        "name": proj.name,
+        "updated_by": user.email,
+        "message": "Project name updated successfully",
+    }
 
 
 @router.put("/api/projects/{project_id}/transfer", tags=["Projects"])
@@ -1885,9 +1935,26 @@ async def upload_project_schedule(
 
     def _matches_project_name(candidate: str) -> bool:
         c = (candidate or "").strip().lower()
-        if not c or not target_name or len(target_name) < 3 or len(c) < 3:
+        if not c or len(c) < 3:
             return False
-        return c == target_name or target_name in c or c in target_name
+        if target_name and len(target_name) >= 3:
+            if c == target_name or target_name in c or c in target_name:
+                return True
+        # Also check historical project names / imported filenames from AuditLogDB
+        # so renaming a project in the portal never breaks schedule upload verification
+        history_logs = (
+            db.query(AuditLogDB)
+            .filter(
+                AuditLogDB.entity_id == str(proj.id),
+                AuditLogDB.action.in_(["IMPORT_MPP", "UPDATE_NAME", "UPLOAD"]),
+            )
+            .all()
+        )
+        for log in history_logs:
+            details_low = (log.details or "").lower()
+            if c in details_low:
+                return True
+        return False
 
     name_matched = (
         _matches_project_name(file_title)

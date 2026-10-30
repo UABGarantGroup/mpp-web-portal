@@ -512,6 +512,28 @@
     </div>
   </div>
 
+  <!-- Edit Project Name Modal -->
+  <div id="edit-project-name-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="width: 520px;">
+      <div class="modal-header">
+        <h3 id="edit-project-name-modal-title"><i class="fa-solid fa-pen-to-square" style="color:var(--primary);"></i> Edit Project Name</h3>
+        <button style="border:none;background:none;font-size:1.2rem;cursor:pointer;" onclick="closeEditProjectNameModal()">&times;</button>
+      </div>
+      <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
+        Updates the project display name in the portal. This does <strong>not</strong> change any task names inside your MS Project schedule.
+      </p>
+      <input type="hidden" id="edit-project-name-id">
+      <div class="form-group" style="margin-bottom:1rem;">
+        <label for="edit-project-name-input">Project Name *</label>
+        <input type="text" id="edit-project-name-input" maxlength="255" style="padding:0.5rem; font-size:0.95rem; width:100%;" placeholder="Enter project name">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeEditProjectNameModal()">Cancel</button>
+        <button class="btn" onclick="submitEditProjectName()"><i class="fa-solid fa-floppy-disk"></i> Save Name</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Transfer Project Owner Modal -->
   <div id="transfer-project-modal" class="modal-overlay" style="display: none;">
     <div class="modal-content" style="width: 520px;">
@@ -1595,6 +1617,9 @@
                 <span style="font-weight:600; color:var(--accent); cursor:pointer;" onclick="editProjectBudget(${p.id}, '${safeErpAttr}', ${p.budget_cost})" title="Click to edit budget (${safeErpHtml})">
                   ${safeNameHtml}
                 </span>
+                <button class="btn btn-sm btn-secondary" onclick="openEditProjectNameModal(${p.id})" title="Rename project (${safeErpHtml})" style="padding:0.12rem 0.35rem; font-size:0.72rem; color:var(--text-muted);">
+                  <i class="fa-solid fa-pen"></i>
+                </button>
                 ${statusBadge}
               </div>
             </td>
@@ -1933,6 +1958,53 @@
         loadPortfolio();
       } catch (e) {
         console.error("Save budget error:", e);
+      }
+    }
+
+    // --- EDIT PROJECT NAME MODAL ---
+
+    function openEditProjectNameModal(projectId) {
+      let p = null;
+      if (portfolioData && portfolioData.groups) {
+        for (const g of portfolioData.groups) {
+          const found = g.projects.find(x => x.id === projectId);
+          if (found) { p = found; break; }
+        }
+      }
+      document.getElementById("edit-project-name-id").value = projectId;
+      document.getElementById("edit-project-name-modal-title").innerHTML = `<i class="fa-solid fa-pen-to-square" style="color:var(--primary);"></i> Edit Project Name: ${escapeHtml(p ? p.erp_number : '#' + projectId)}`;
+      document.getElementById("edit-project-name-input").value = p ? (p.name || "") : "";
+      document.getElementById("edit-project-name-modal").style.display = "flex";
+    }
+
+    function closeEditProjectNameModal() {
+      document.getElementById("edit-project-name-modal").style.display = "none";
+    }
+
+    async function submitEditProjectName() {
+      const pId = document.getElementById("edit-project-name-id").value;
+      const newName = (document.getElementById("edit-project-name-input").value || "").trim();
+      if (!newName) {
+        alert("Project name cannot be empty.");
+        return;
+      }
+
+      try {
+        const resp = await fetch(`/api/projects/${pId}/name`, {
+          method: "PUT",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ name: newName })
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          alert("Error updating project name: " + (err.detail || "Unable to update project name."));
+          return;
+        }
+        closeEditProjectNameModal();
+        await loadPortfolio();
+      } catch (e) {
+        console.error("Update project name error:", e);
+        alert("Failed to update project name: " + e.message);
       }
     }
 
