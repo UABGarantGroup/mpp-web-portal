@@ -1931,14 +1931,27 @@ async def upload_project_schedule(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to parse project file: {str(e)}")
 
-    # Safety check: Verify the file belongs to this project to avoid uploading to the wrong row
+    # Verify and link project via technical fields (PortalProjectGUID Text30, Task 0 GUID, Project GUID)
     file_erp = (parsed.get("erp_number") or "").strip()
     file_title = (parsed.get("title") or "").strip()
     file_task_name = (parsed.get("task_name") or "").strip()
+    portal_guid = (parsed.get("portal_project_guid") or "").strip().lower()
+    tech_guids = [str(g).strip().lower() for g in (parsed.get("technical_guids") or []) if g and str(g).strip()]
+    proj_guid_low = (proj.project_guid or "").strip().lower()
     target_erp = (proj.erp_number or "").strip().lower()
     target_name = (proj.name or "").strip().lower()
     clean_fn = os.path.basename(file.filename or "").strip().lower()
     clean_stem = os.path.splitext(clean_fn)[0].strip()
+    is_mpp_binary = clean_fn.endswith(".mpp")
+
+    history_logs = (
+        db.query(AuditLogDB)
+        .filter(
+            AuditLogDB.entity_id == str(proj.id),
+            AuditLogDB.action.in_(["IMPORT_MPP", "UPDATE_NAME", "UPLOAD"]),
+        )
+        .all()
+    )
 
     def _matches_project_name(candidate: str) -> bool:
         c = (candidate or "").strip().lower()
@@ -1947,21 +1960,19 @@ async def upload_project_schedule(
         if target_name and len(target_name) >= 3:
             if c == target_name or target_name in c or c in target_name:
                 return True
-        # Also check historical project names / imported filenames from AuditLogDB
-        # so renaming a project in the portal never breaks schedule upload verification
-        history_logs = (
-            db.query(AuditLogDB)
-            .filter(
-                AuditLogDB.entity_id == str(proj.id),
-                AuditLogDB.action.in_(["IMPORT_MPP", "UPDATE_NAME", "UPLOAD"]),
-            )
-            .all()
-        )
         for log in history_logs:
             details_low = (log.details or "").lower()
             if c in details_low:
                 return True
         return False
+
+    technical_guid_matched = bool(proj_guid_low and proj_guid_low in tech_guids)
+    if not technical_guid_matched and tech_guids:
+        for log in history_logs:
+            details_low = (log.details or "").lower()
+            if any(g in details_low for g in tech_guids):
+                technical_guid_matched = True
+                break
 
     name_matched = (
         _matches_project_name(file_title)
@@ -1969,35 +1980,64 @@ async def upload_project_schedule(
         or _matches_project_name(clean_stem)
     )
 
-    if file_erp:
-        clean_file_erp = file_erp.lower()
-        erp_matched = (
-            clean_file_erp == target_erp
-            or (target_erp.startswith("prj-") and (clean_file_erp in target_name or name_matched))
-        )
-        if not erp_matched:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Project mismatch! File contains ERP '{file_erp}', but target row is '{proj.erp_number}' ({proj.name}). Upload rejected to prevent overwriting wrong project."
-            )
-    elif file_title and target_erp and not target_erp.startswith("prj-"):
-        # Check if ERP number or project name matches file title, top task name, or filename
-        clean_title = file_title.lower()
-        clean_task = file_task_name.lower()
-        erp_no_dash = target_erp.replace("-", "")
-        erp_in_file = (
-            target_erp in clean_title
-            or erp_no_dash in clean_title.replace("-", "")
+    clean_title = file_title.lower()
+    clean_task = file_task_name.lower()
+    erp_no_dash = target_erp.replace("-", "")
+    erp_in_file = bool(
+        target_erp
+        and (
+            (file_erp and file_erp.lower() == target_erp)
+            or target_erp in clean_title
+            or (erp_no_dash and erp_no_dash in clean_title.replace("-", ""))
             or target_erp in clean_task
-            or erp_no_dash in clean_task.replace("-", "")
+            or (erp_no_dash and erp_no_dash in clean_task.replace("-", ""))
             or target_erp in clean_fn
-            or erp_no_dash in clean_fn.replace("-", "")
+            or (erp_no_dash and erp_no_dash in clean_fn.replace("-", ""))
         )
-        if not erp_in_file and not name_matched:
+    )
+
+    # Check if the file carries an explicit PortalProjectGUID (Text30) belonging to a different portal project
+    other_portal_proj = None
+    if portal_guid and portal_guid != proj_guid_low:
+        other_portal_proj = (
+            db.query(ProjectDB)
+            .filter(ProjectDB.project_guid.ilike(portal_guid), ProjectDB.id != proj.id)
+            .first()
+        )
+
+    # Check if file_erp belongs to a different existing project in the database
+    other_erp_proj = None
+    if file_erp and file_erp.lower() != target_erp:
+        other_erp_proj = (
+            db.query(ProjectDB)
+            .filter(ProjectDB.erp_number.ilike(file_erp), ProjectDB.id != proj.id)
+            .first()
+        )
+
+    # If the file is not matched by technical GUID, project name, or target ERP in title/task/filename,
+    # reject only when the schedule's technical PortalProjectGUID (Text30) or ERP belongs to a different existing portal project.
+    if not (technical_guid_matched or name_matched or erp_in_file):
+        if other_portal_proj is not None:
             raise HTTPException(
                 status_code=400,
-                detail=f"Project verification error! Neither the file title ('{file_title}') nor filename ('{file.filename}') matches target ERP number '{proj.erp_number}'. Please check that you selected the schedule for this project."
+                detail=f"Project mismatch! Schedule technical ID belongs to project '{other_portal_proj.erp_number}' ({other_portal_proj.name}), but target row is '{proj.erp_number}' ({proj.name}).",
             )
+        if not is_mpp_binary and other_erp_proj is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Project mismatch! File contains ERP '{file_erp}' belonging to project '{other_erp_proj.name}', but target row is '{proj.erp_number}' ({proj.name}). Upload rejected to prevent overwriting wrong project.",
+            )
+
+    # Bind the schedule's technical GUID to the project record if not already used by another project
+    primary_file_guid = (parsed.get("project_guid") or "").strip()
+    if primary_file_guid and primary_file_guid.lower() != proj_guid_low:
+        conflict_proj = (
+            db.query(ProjectDB)
+            .filter(ProjectDB.project_guid == primary_file_guid, ProjectDB.id != proj.id)
+            .first()
+        )
+        if not conflict_proj:
+            proj.project_guid = primary_file_guid
 
     # Microsoft Project logic alignment:
     # If the uploaded file defines a Budget Resource assignment (budget_cost > 0), align both
@@ -2010,6 +2050,8 @@ async def upload_project_schedule(
         effective_budget_cost = proj.budget_cost
 
     file_baseline_budget = parsed.get("baseline_budget", 0.0)
+    if parsed.get("start_date"):
+        proj.start_date = parsed["start_date"]
 
     # Update latest project snapshot or create new one
     now = datetime.utcnow()
@@ -2034,16 +2076,32 @@ async def upload_project_schedule(
     proj.last_updated_by = user.email
     proj.last_updated_at = now
 
-    # Detect generic resources in the uploaded file for the replacement wizard
+    # Detect generic resources in the uploaded file for the replacement wizard and sync active team resources
     file_resources = parsed.get("resources", [])
     generic_found = [r for r in file_resources if r.get("is_generic")]
+    for r_info in file_resources:
+        r_name = (r_info.get("name") or "").strip()
+        if r_name and not r_info.get("is_budget"):
+            match_res = db.query(ResourceDB).filter(ResourceDB.name.ilike(r_name)).first()
+            if match_res:
+                existing_link = (
+                    db.query(ProjectTeamResourceDB)
+                    .filter(
+                        ProjectTeamResourceDB.project_id == proj.id,
+                        ProjectTeamResourceDB.resource_id == match_res.id,
+                    )
+                    .first()
+                )
+                if not existing_link:
+                    db.add(ProjectTeamResourceDB(project_id=proj.id, resource_id=match_res.id))
 
+    tech_guid_suffix = f", technical_guids={','.join(tech_guids)}" if tech_guids else ""
     audit = AuditLogDB(
         entity_type="PROJECT_SCHEDULE",
         entity_id=str(proj.id),
         action="UPLOAD",
         changed_by=user.email,
-        details=f"Schedule file '{os.path.basename(file.filename or '')}' uploaded by {user.email}. % Complete: {parsed['percent_complete']}%, Cost: €{parsed['cost']}, Baseline Cost: €{parsed['baseline_cost']}, Budget Cost: €{effective_budget_cost}, Baseline Budget: €{file_baseline_budget}",
+        details=f"Schedule file '{os.path.basename(file.filename or '')}' uploaded by {user.email}. % Complete: {parsed['percent_complete']}%, Cost: €{parsed['cost']}, Baseline Cost: €{parsed['baseline_cost']}, Budget Cost: €{effective_budget_cost}, Baseline Budget: €{file_baseline_budget}{tech_guid_suffix}",
     )
     db.add(audit)
     db.commit()
@@ -2186,9 +2244,15 @@ async def import_project_from_mpp(
     # 6. Budget calculation alignment
     effective_budget = parsed.get("budget_cost", 0.0) or 0.0
 
-    # 7. Create ProjectDB
+    # 7. Create ProjectDB (binding the schedule's technical GUID if available and unused)
+    imported_guid = (parsed.get("project_guid") or "").strip()
+    if imported_guid and not db.query(ProjectDB).filter(ProjectDB.project_guid == imported_guid).first():
+        chosen_guid = imported_guid
+    else:
+        chosen_guid = str(uuid.uuid4())
+
     new_project = ProjectDB(
-        project_guid=str(uuid.uuid4()),
+        project_guid=chosen_guid,
         erp_number=final_erp,
         name=project_name[:255],
         owner=pm_user.display_name,
@@ -2239,13 +2303,15 @@ async def import_project_from_mpp(
     )
     db.add(init_snap)
 
-    # 11. Audit log
+    # 11. Audit log (including technical_guids for future schedule upload matching)
+    imported_tech_guids = [str(g).strip().lower() for g in (parsed.get("technical_guids") or []) if g and str(g).strip()]
+    tech_guid_suffix = f", technical_guids={','.join(imported_tech_guids)}" if imported_tech_guids else ""
     audit = AuditLogDB(
         entity_type="PROJECT",
         entity_id=str(new_project.id),
         action="IMPORT_MPP",
         changed_by=user.email,
-        details=f"Imported project '{new_project.name}' (ERP: {new_project.erp_number}) from '{filename}', assigned to PM '{pm_user.display_name}' ({pm_user.email})",
+        details=f"Imported project '{new_project.name}' (ERP: {new_project.erp_number}) from '{filename}', assigned to PM '{pm_user.display_name}' ({pm_user.email}){tech_guid_suffix}",
     )
     db.add(audit)
     db.commit()

@@ -241,4 +241,65 @@ def test_rename_project_preserves_custom_name_and_allows_schedule_uploads(client
     assert up_data["metrics"]["cost"] == 31000.0
 
 
+def test_upload_schedule_with_stale_template_erp_uses_technical_field_and_succeeds(client, db_session):
+    """
+    Regression test for uploading a schedule to seeded project '25-0980' ('25-0980 Pikasoima IGG katilu apsauga')
+    when the schedule file contains ERP '26-0980' in Task 0 Text1 (or even a modified Task 0 name).
+    Also verifies that technical GUID (PortalProjectGUID Text30 / Task 0 GUID) is embedded in exported XML
+    and links the schedule to the project on subsequent uploads.
+    """
+    proj = db_session.query(ProjectDB).filter(ProjectDB.erp_number == "25-0980").first()
+    assert proj is not None
+    proj_id = proj.id
+    proj_name = proj.name  # '25-0980 Pikasoima IGG katilu apsauga'
+
+    # 1. Upload schedule that has '26-0980' in Task 0 Text1 to project '25-0980' -> must succeed!
+    xml_with_26_0980 = _build_test_mspdi_xml(top_task_name="26-0980 Pikasoima IGG katilu apsauga", erp="26-0980", cost=27400.0)
+    up_resp = client.post(
+        f"/api/projects/{proj_id}/upload-schedule",
+        files={"file": (f"{proj_name}.mpp.xml", xml_with_26_0980, "application/xml")},
+    )
+    assert up_resp.status_code == 200, up_resp.text
+    assert up_resp.json()["metrics"]["cost"] == 27400.0
+
+    # 2. Export XML template for this project and verify technical PortalProjectGUID (FieldID 188744016) & Task 0 GUID exist
+    exp_resp = client.get(f"/api/projects/{proj_id}/template/xml")
+    assert exp_resp.status_code == 200
+    db_session.refresh(proj)
+    assert proj.project_guid in exp_resp.text
+    assert "188744016" in exp_resp.text
+
+    # 3. Modify both Title, Task 0 Name, and Text1 ERP in the exported XML while keeping technical PortalProjectGUID
+    root = ET.fromstring(exp_resp.content.decode("utf-8"))
+    ns_url = "http://schemas.microsoft.com/project"
+    ns = {"ms": ns_url}
+    title_el = root.find("ms:Title", ns)
+    if title_el is not None:
+        title_el.text = "Completely Renamed Schedule Title"
+    for task in root.findall(".//ms:Task", ns):
+        uid = task.find("ms:UID", ns)
+        if uid is not None and uid.text == "0":
+            name_el = task.find("ms:Name", ns)
+            if name_el is not None:
+                name_el.text = "Completely Renamed Task 0"
+            cost_el = task.find("ms:Cost", ns)
+            if cost_el is None:
+                cost_el = ET.SubElement(task, f"{{{ns_url}}}Cost")
+            cost_el.text = "39900.00"
+            for ea in task.findall("ms:ExtendedAttribute", ns):
+                fid = ea.find("ms:FieldID", ns)
+                val = ea.find("ms:Value", ns)
+                if fid is not None and fid.text == "188743731" and val is not None:
+                    val.text = "26-0980"
+
+    modified_xml = ET.tostring(root, encoding="utf-8")
+    up_resp_2 = client.post(
+        f"/api/projects/{proj_id}/upload-schedule",
+        files={"file": ("renamed_file.xml", modified_xml, "application/xml")},
+    )
+    assert up_resp_2.status_code == 200, up_resp_2.text
+    assert up_resp_2.json()["metrics"]["cost"] == 39900.0
+
+
+
 

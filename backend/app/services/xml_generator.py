@@ -193,6 +193,7 @@ def build_ms_project_xml(
 
     # 2. Extended Attributes (Custom Field Definitions)
     ext_attrs_el = ET.SubElement(root, "ExtendedAttributes")
+    defined_field_ids = set()
     for cf in template_req.custom_fields:
         field_id = cf.field_id
         field_name = cf.field_name
@@ -201,10 +202,18 @@ def build_ms_project_xml(
             if not field_name:
                 field_name = internal_name
 
+        defined_field_ids.add(str(field_id))
         ext_attr = ET.SubElement(ext_attrs_el, "ExtendedAttribute")
         ET.SubElement(ext_attr, "FieldID").text = str(field_id)
         ET.SubElement(ext_attr, "FieldName").text = field_name
         ET.SubElement(ext_attr, "Alias").text = cf.alias or field_name
+
+    # Technical project identifier field (Task Text30 = 188744016) for linking exported schedules to portal projects
+    if template_req.project_guid and "188744016" not in defined_field_ids:
+        tech_attr = ET.SubElement(ext_attrs_el, "ExtendedAttribute")
+        ET.SubElement(tech_attr, "FieldID").text = "188744016"
+        ET.SubElement(tech_attr, "FieldName").text = "Text30"
+        ET.SubElement(tech_attr, "Alias").text = "PortalProjectGUID"
 
     # 3. Calendars Definition
     calendars_el = ET.SubElement(root, "Calendars")
@@ -312,6 +321,8 @@ def build_ms_project_xml(
     tasks_el = ET.SubElement(root, "Tasks")
     summary_task = ET.SubElement(tasks_el, "Task")
     ET.SubElement(summary_task, "UID").text = "0"
+    if template_req.project_guid:
+        ET.SubElement(summary_task, "GUID").text = str(template_req.project_guid)
     ET.SubElement(summary_task, "ID").text = "0"
     ET.SubElement(summary_task, "Type").text = "1"
     ET.SubElement(summary_task, "IsNull").text = "0"
@@ -338,6 +349,11 @@ def build_ms_project_xml(
             task_ext = ET.SubElement(summary_task, "ExtendedAttribute")
             ET.SubElement(task_ext, "FieldID").text = str(f_id)
             ET.SubElement(task_ext, "Value").text = str(field_val)
+
+    if template_req.project_guid:
+        tech_ext = ET.SubElement(summary_task, "ExtendedAttribute")
+        ET.SubElement(tech_ext, "FieldID").text = "188744016"
+        ET.SubElement(tech_ext, "Value").text = str(template_req.project_guid)
 
     # 5. Resources Section
     # IMPORTANT: In MS Project Desktop, <ID> is the 1-based row position on the Resource Sheet

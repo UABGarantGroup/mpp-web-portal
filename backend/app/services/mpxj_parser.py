@@ -348,8 +348,11 @@ def parse_project_xml(file_bytes: bytes) -> Dict[str, Any]:
     budget_cost = parse_float(find_text(task_0, f"{prefix}BudgetCost")) or task_0_budget_cost
     baseline_budget = parse_float(find_text(task_0, f"{prefix}BaselineBudget") or find_text(task_0, f"{prefix}Baseline/{prefix}BudgetCost")) or task_0_baseline_budget
 
-    # Extract ERP Project Number from Task 0 ExtendedAttribute
+    # Extract ERP Project Number and Technical PortalProjectGUID from Task 0 ExtendedAttributes and GUID
     erp_number = None
+    portal_project_guid = None
+    task_0_guid = find_text(task_0, f"{prefix}GUID") if task_0 is not None else None
+    project_props_guid = find_text(root, f"{prefix}GUID")
     if task_0 is not None:
         ext_attrs = task_0.findall(f"{prefix}ExtendedAttribute", ns) if ns else task_0.findall("ExtendedAttribute")
         for ea in ext_attrs:
@@ -357,12 +360,22 @@ def parse_project_xml(file_bytes: bytes) -> Dict[str, Any]:
             val = find_text(ea, f"{prefix}Value")
             if fid == "188743731" and val:  # Task Text1 (ERP Project Number)
                 erp_number = val
+            elif fid in ("188744016", "188744017") and val:  # Task Text30 (PortalProjectGUID)
+                portal_project_guid = val
+
+    tech_guids = []
+    for g in (portal_project_guid, task_0_guid, project_props_guid):
+        if g and str(g).strip() and str(g).strip() not in tech_guids:
+            tech_guids.append(str(g).strip())
 
     return {
         "title": title,
         "task_name": task_0_name or title,
         "notes": task_0_notes,
         "erp_number": erp_number,
+        "portal_project_guid": portal_project_guid,
+        "project_guid": tech_guids[0] if tech_guids else None,
+        "technical_guids": tech_guids,
         "percent_complete": percent_complete,
         "percent_work_complete": percent_work_complete,
         "start_date": start_date,
@@ -473,8 +486,17 @@ def parse_with_mpxj(file_bytes: bytes, filename: str) -> Dict[str, Any]:
             if total_leaf_baseline > 0.0:
                 baseline_cost = total_leaf_baseline
 
-        # ERP Number check from Task Text1
+        # ERP Number & Technical PortalProjectGUID check from Task 0 and Project Properties
         erp_number = None
+        portal_project_guid = None
+        task_0_guid = None
+        project_props_guid = None
+        try:
+            if props and props.getGUID():
+                project_props_guid = str(props.getGUID()).strip()
+        except Exception:
+            pass
+
         if task_0:
             try:
                 t1 = task_0.getText(1)
@@ -482,6 +504,22 @@ def parse_with_mpxj(file_bytes: bytes, filename: str) -> Dict[str, Any]:
                     erp_number = str(t1).strip()
             except Exception:
                 pass
+            try:
+                t30 = task_0.getText(30)
+                if t30:
+                    portal_project_guid = str(t30).strip()
+            except Exception:
+                pass
+            try:
+                if task_0.getGUID():
+                    task_0_guid = str(task_0.getGUID()).strip()
+            except Exception:
+                pass
+
+        tech_guids = []
+        for g in (portal_project_guid, task_0_guid, project_props_guid):
+            if g and g not in tech_guids:
+                tech_guids.append(g)
 
         # Resources list
         resources_list = []
@@ -507,6 +545,9 @@ def parse_with_mpxj(file_bytes: bytes, filename: str) -> Dict[str, Any]:
             "task_name": task_0_name or title,
             "notes": task_0_notes,
             "erp_number": erp_number,
+            "portal_project_guid": portal_project_guid,
+            "project_guid": tech_guids[0] if tech_guids else None,
+            "technical_guids": tech_guids,
             "percent_complete": percent_complete,
             "percent_work_complete": percent_work_complete,
             "start_date": start_date,
